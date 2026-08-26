@@ -1,17 +1,46 @@
 {
   "name": "foreman",
-  "version": "0.1.0",
-  "description": "Drives a requirement through a full SDLC — grill, plan, critique, build, test, beta, handoff — using a manager session that spawns and supervises independent worker sessions with budgets, deadlines, stuck-detection and handover compaction.",
-  "author": { "name": "Uddipan Dey" },
+  "version": "0.1.1",
+  "description": "Drives a requirement through a full SDLC \u2014 grill, plan, critique, build, test, beta, handoff \u2014 using a manager session that spawns and supervises independent worker sessions with budgets, deadlines, stuck-detection and handover compaction.",
+  "author": {
+    "name": "Uddipan Dey"
+  },
   "license": "MIT",
-  "keywords": ["sdlc", "orchestration", "multi-agent", "kanban", "testing"],
+  "keywords": [
+    "sdlc",
+    "orchestration",
+    "multi-agent",
+    "kanban",
+    "testing"
+  ],
   "dependencies": [
-    { "name": "impeccable", "marketplace": "claude-community" },
-    { "name": "ui-ux-pro-max", "marketplace": "ui-ux-pro-max-skill" },
-    { "name": "mattpocock-skills", "marketplace": "mattpocock" },
-    { "name": "skill-creator", "marketplace": "claude-plugins-official" },
-    { "name": "pr-review-toolkit", "marketplace": "claude-plugins-official" },
-    { "name": "session-report", "marketplace": "claude-plugins-official" },
-    { "name": "frontend-design", "marketplace": "claude-plugins-official" }
+    {
+      "name": "impeccable",
+      "marketplace": "claude-community"
+    },
+    {
+      "name": "ui-ux-pro-max",
+      "marketplace": "ui-ux-pro-max-skill"
+    },
+    {
+      "name": "mattpocock-skills",
+      "marketplace": "mattpocock"
+    },
+    {
+      "name": "skill-creator",
+      "marketplace": "claude-plugins-official"
+    },
+    {
+      "name": "pr-review-toolkit",
+      "marketplace": "claude-plugins-official"
+    },
+    {
+      "name": "session-report",
+      "marketplace": "claude-plugins-official"
+    },
+    {
+      "name": "frontend-design",
+      "marketplace": "claude-plugins-official"
+    }
   ]
 }
