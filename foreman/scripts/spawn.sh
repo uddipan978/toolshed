@@ -59,7 +59,11 @@ if [[ "$WORKTREE" == "yes" ]] && git -C "$PROJECT_DIR" rev-parse --git-dir >/dev
   CWD="$WT"
 fi
 
-cp "$BRIEF" "$SDIR/brief.md"
+# The manager normally writes the brief straight to its canonical path, so
+# copying it onto itself would abort the script under set -e.
+if [[ "$(cd "$(dirname "$BRIEF")" && pwd)/$(basename "$BRIEF")" != "$SDIR/brief.md" ]]; then
+  cp "$BRIEF" "$SDIR/brief.md"
+fi
 
 # crossSessionInbound:accept is REQUIRED. Without it an unattended worker holds
 # the manager's SendMessage poke behind a dialog nobody can answer, and it simply
