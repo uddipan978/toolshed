@@ -23,7 +23,17 @@ DEFAULT_CONTEXT_WINDOW = 200_000
 STATUS_ORDER = ["backlog", "planned", "in_progress", "in_test", "beta", "awaiting_human", "done", "blocked"]
 
 # Task checkbox legend -> lane. Kept in one place so board.py and dashboard.py agree.
-LEGEND = {" ": "backlog", "~": "in_progress", "x": "done", "!": "blocked", "?": "awaiting_human"}
+# Every lane needs a token, or that lane can never be populated.
+LEGEND = {
+    " ": "backlog",
+    ">": "planned",
+    "~": "in_progress",
+    "t": "in_test",
+    "b": "beta",
+    "x": "done",
+    "!": "blocked",
+    "?": "awaiting_human",
+}
 
 
 def context_window_for(model: str | None) -> int:

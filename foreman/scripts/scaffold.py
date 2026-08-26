@@ -147,8 +147,8 @@ Working directory for the `foreman` SDLC orchestration plugin.
 `board.md` and `dashboard.html` are generated from the task files. Delete them any
 time; `/foreman:board` rebuilds both.
 
-Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked ·
-`[?]` needs clarification.
+Status legend: `[ ]` backlog · `[>]` planned · `[~]` in progress · `[t]` in test ·
+`[b]` beta · `[x]` done · `[!]` blocked · `[?]` awaiting human.
 """
 
 

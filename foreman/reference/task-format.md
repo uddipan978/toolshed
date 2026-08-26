@@ -12,10 +12,16 @@
 | Token | Lane | Means |
 |---|---|---|
 | `[ ]` | Backlog | not started |
-| `[~]` | In Progress | a session is working it |
+| `[>]` | Planned | briefed, waiting on a dependency or a free worker |
+| `[~]` | In Progress | a developer session is working it |
+| `[t]` | In Test | passed G3, a tester session has it |
+| `[b]` | Beta | passed G4, under human-perspective review |
 | `[x]` | Done | acceptance met **and** Verify run |
 | `[!]` | Blocked | reason recorded inline |
 | `[?]` | Awaiting Human | needs a decision only the user can make |
+
+Every lane on the board has a token. A lane with no token can never be reached, which
+is how In Test and Beta sat permanently empty before v0.1.2.
 
 ## The clarification marker
 

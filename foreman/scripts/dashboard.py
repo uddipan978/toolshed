@@ -74,7 +74,7 @@ h1{margin:0;font:650 21px/1.1 var(--sans);letter-spacing:-.02em}
   position:relative;overflow:hidden;min-width:0}
 .stat::after{content:"";position:absolute;inset:0 auto 0 0;width:2px;background:var(--line2)}
 .stat.live::after{background:var(--live)} .stat.warn::after{background:var(--warn)}
-.stat.bad::after{background:var(--bad)}   .stat.xp::after{background:var(--xp)}
+.stat.bad::after{background:var(--bad)}
 .stat .k{font:10px/1.3 var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.1em}
 .stat .v{font:650 22px/1.15 var(--sans);letter-spacing:-.02em;margin-top:6px;
   font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
@@ -220,9 +220,6 @@ def compute(root: Path):
     alerts = [s for s in sessions if s.get("state") in ("stuck", "overdue")]
 
     # XP is a real read on progress: criteria are the atoms of verified work.
-    xp = ac_done * 10 + len(done) * 50
-    xp_max = max(ac_total * 10 + total * 50, 1)
-
     reqs = root / "REQUIREMENTS.md"
     rank = {"backlog": 0, "planned": 0, "awaiting_human": 0, "blocked": 0,
             "in_progress": 1, "in_test": 2, "beta": 3, "done": 4}
@@ -256,7 +253,7 @@ def compute(root: Path):
     ]
     return dict(tasks=tasks, sessions=sessions, total=total, done=done, ac_total=ac_total,
                 ac_done=ac_done, spend=spend, turns=turns, handovers=handovers,
-                reworked=reworked, live=live, alerts=alerts, xp=xp, xp_max=xp_max,
+                reworked=reworked, live=live, alerts=alerts,
                 reached=reached, badges=badges)
 
 
@@ -279,11 +276,10 @@ def render(root: Path) -> str:
              f'<div class="lbl">{len(done)}/{total} tasks</div></div></div></div>')
 
     # stat rail
-    xp_pct = 100.0 * d["xp"] / d["xp_max"]
     tiles = [
-        ("xp", "XP", f'{d["xp"]:,}', f'{xp_pct:.0f}% of {d["xp_max"]:,}'),
         ("live" if d["ac_total"] and d["ac_done"] == d["ac_total"] else "", "Criteria met",
          f'{d["ac_done"]}/{d["ac_total"]}', "verified, not claimed"),
+        ("", "Tasks", f'{len(done)}/{total}', "shipped / planned"),
         ("", "Sessions", f'{len(sessions)}', f'{len(d["live"])} live'),
         ("", "Turns", f'{d["turns"]:,}', "across all workers"),
         ("", "Spend", f'${d["spend"]:.2f}', "settled runs only"),
