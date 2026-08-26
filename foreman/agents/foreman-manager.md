@@ -69,6 +69,7 @@ Each line it emits is an event you act on:
 | `STUCK <name>` | Read its `stream.jsonl` tail and `progress.md`. Decide: unblock it with a message, or stop and respawn from its handover. |
 | `OVERDUE <name>` | Stop it. Read the newest `handover-N.md`. Spawn a successor seeded from that file. |
 | `COMPACT <name>` | Informational — it self-compacted and wrote a handover. No action. |
+| `TURNS <name>` | It has used 80% of its turn cap. Cost is not visible mid-run, so this is the early warning: narrow the remaining scope or prepare a successor. |
 | `BUDGET <name>` | Its spend cap stopped it. Successor or descope; say which and why in `log.md`. |
 | `DONE <name>` | Verify its acceptance boxes actually got checked before advancing the gate. |
 | `FAILED <name>` | Read `stderr.log`. Fix the brief, then respawn — never respawn an unchanged brief. |

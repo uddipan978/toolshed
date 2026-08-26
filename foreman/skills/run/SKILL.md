@@ -70,6 +70,7 @@ address other sessions use to reach them. Set the task file's `**Session**` fiel
 | `STUCK` | Read its `progress.md` and the tail of `stream.jsonl`. Unblock by message, or stop and respawn from its handover. |
 | `OVERDUE` | Stop it. Read the newest `handover-N.md`. Spawn a successor seeded from that file. |
 | `COMPACT` | Informational — it self-compacted and wrote a handover. No action. |
+| `TURNS` | It has used 80% of its turn cap. Narrow the remaining scope or prepare a successor. |
 | `BUDGET` | Its cap stopped it. Successor or descope; record which and why. |
 | `DONE` | **Verify before advancing.** Open the task file: are the acceptance boxes actually checked and does the Activity log carry real Verify output? |
 | `FAILED` | Read `stderr.log`. Fix the brief, then respawn — never respawn an unchanged brief. |

@@ -56,6 +56,12 @@ def assess(sdir: Path, now: float) -> dict:
     else:
         state = "running"
 
+    # Cost only appears in the final result event, so mid-run spend is unknown.
+    # Turns are reported on every assistant message, so they are the live proxy
+    # for a worker running out of room.
+    max_turns = int(status.get("max_turns") or 0)
+    turn_pressure = bool(max_turns and stream["turns"] >= 0.8 * max_turns)
+
     return {
         "status": status,
         "stream": stream,
@@ -64,6 +70,7 @@ def assess(sdir: Path, now: float) -> dict:
         "state": state,
         "over_budget": bool(budget and stream["cost_usd"] >= budget),
         "over_context": stream["context_pct"] >= compact_pct,
+        "turn_pressure": turn_pressure,
     }
 
 
@@ -108,6 +115,12 @@ def sweep(root: Path, once: bool = False) -> None:
                     seen[f"{name}:ctx"] = "hit"
                     emit(f"COMPACT {name} — crossed {a['status'].get('compact_pct')}% context, {metrics}")
                     append_log(root, f"`{name}` crossed compaction threshold — {metrics}")
+
+                if a["turn_pressure"] and seen.get(f"{name}:turns") != "hit":
+                    seen[f"{name}:turns"] = "hit"
+                    emit(f"TURNS {name} — {st['turns']}/{a['status'].get('max_turns')} turns used, "
+                         f"{metrics}. It may not finish; consider narrowing the remaining scope.")
+                    append_log(root, f"`{name}` passed 80% of its turn cap — {metrics}")
 
                 if a["over_budget"] and seen.get(f"{name}:budget") != "hit":
                     seen[f"{name}:budget"] = "hit"

@@ -50,6 +50,7 @@ event per state change:
 | `STUCK` | read `progress.md`, unblock or respawn from handover |
 | `OVERDUE` | stop, seed a successor from the handover |
 | `COMPACT` | informational — it self-compacted at 55% |
+| `TURNS` | 80% of the turn cap used — narrow scope or prepare a successor |
 | `BUDGET` | cap reached; successor or descope |
 | `DONE` | verify the acceptance boxes before advancing |
 | `FAILED` | fix the brief, then respawn |
