@@ -71,7 +71,7 @@ Each line it emits is an event you act on:
 | `COMPACT <name>` | Informational — it self-compacted and wrote a handover. No action. |
 | `TURNS <name>` | It has used 80% of its turn cap. Cost is not visible mid-run, so this is the early warning: narrow the remaining scope or prepare a successor. |
 | `BUDGET <name>` | Its spend cap stopped it. Successor or descope; say which and why in `log.md`. |
-| `DONE <name>` | Verify its acceptance boxes actually got checked before advancing the gate. |
+| `DONE <name>` | Verify its acceptance boxes actually got checked, then run `scripts/integrate.sh --name <name>` to merge its branch back before spawning anything that depends on it. |
 | `FAILED <name>` | Read `stderr.log`. Fix the brief, then respawn — never respawn an unchanged brief. |
 
 Never poll by messaging workers "are you done?". The supervisor tells you.

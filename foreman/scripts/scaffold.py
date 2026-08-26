@@ -147,9 +147,53 @@ Working directory for the `foreman` SDLC orchestration plugin.
 `board.md` and `dashboard.html` are generated from the task files. Delete them any
 time; `/foreman:board` rebuilds both.
 
+## Committing
+
+This directory is meant to be committed — it is the provenance of how the code got
+written. What lands in git:
+
+| Committed | Ignored |
+|---|---|
+| task and module files, `REQUIREMENTS.md`, `constitution.md` | `sessions/*/stream.jsonl` (large, regenerable) |
+| `board.md`, `log.md`, `decisions/` | `sessions/*/stderr.log` |
+| `sessions/*/brief.md`, `progress.md`, `handover-*.md`, `status.json` | `dashboard.html` (derived) |
+
+`status.json` is rewritten on every supervisor sweep, so expect it to show as
+modified while a run is in flight. Commit at the end of a run, not during one.
+
+Worker worktrees live outside this directory at `<project>/.claude/worktrees/` and are
+added to the project `.gitignore` by the scaffolder.
+
 Status legend: `[ ]` backlog · `[>]` planned · `[~]` in progress · `[t]` in test ·
 `[b]` beta · `[x]` done · `[!]` blocked · `[?]` awaiting human.
 """
+
+
+# Worker worktrees live at <project>/.claude/worktrees/. They are real git
+# worktrees inside the working tree, so without this they show up as untracked
+# and get swept into a commit.
+GIT_EXCLUDES = [
+    (".claude/worktrees/", "Foreman worker git worktrees — never commit these"),
+]
+
+
+def ensure_gitignore(project: Path) -> list[str]:
+    """Add Foreman's exclusions to the project .gitignore, idempotently."""
+    if not (project / ".git").exists():
+        return []
+    gi = project / ".gitignore"
+    existing = gi.read_text(errors="replace") if gi.exists() else ""
+    missing = [(pat, why) for pat, why in GIT_EXCLUDES
+               if not any(l.strip() == pat for l in existing.splitlines())]
+    if not missing:
+        return []
+    block = "" if not existing or existing.endswith("\n") else "\n"
+    block += "\n# --- foreman ---\n"
+    for pat, why in missing:
+        block += f"# {why}\n{pat}\n"
+    with gi.open("a") as fh:
+        fh.write(block)
+    return [f"{pat} -> .gitignore" for pat, _ in missing]
 
 
 def scaffold(project: Path, force: bool) -> list[str]:
@@ -188,6 +232,7 @@ if __name__ == "__main__":
         sys.exit(f"scaffold.py: no such directory: {project}")
 
     created = scaffold(project, a.force)
+    created += ensure_gitignore(project)
     if created:
         print(f"scaffolded .foreman/ in {project}")
         for c in created:

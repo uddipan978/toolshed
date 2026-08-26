@@ -66,6 +66,11 @@ Enforced by the `Stop` hook (`scripts/verify_gate.py`), which refuses the stop w
 are unchecked or the Activity log is empty — up to three times, then it defers to the
 manager.
 
+**Then integrate**: `scripts/integrate.sh --name <session>` merges the worker's branch
+into the base and removes its worktree. Do this before spawning any dependent task —
+`spawn.sh` branches from HEAD, so an un-integrated dependency is invisible to the next
+worker.
+
 ## G4 — Test
 
 **Entry:** a task passed G3.

@@ -91,6 +91,23 @@ Set the task status to `in_test`. A failure routes back to the developer who wro
 the tester's reproduction steps in the new brief. Then it is re-tested — a fix is not
 verified by the person who made it.
 
+## Integrate as soon as a task passes G4
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/integrate.sh --name dev-m01-02 --root .foreman
+```
+
+This merges the worker's branch into the base branch and removes its worktree.
+
+**Do this per task, not at the end of the run.** `spawn.sh` branches from HEAD, so a
+task spawned before its dependency is integrated will never see that dependency's code —
+it silently builds against a stale tree. Integrating incrementally is what keeps the
+dependency order you planned in G1 actually true on disk.
+
+A merge conflict here is reported, never auto-resolved, and the merge is aborted so the
+base branch is untouched. Treat it as a **planning error**: two tasks you marked `[P]`
+touched the same files. Fix the decomposition, do not hand-resolve and move on.
+
 ## G5 — Beta
 
 Only once every task in the module passes G4. One beta session per module, not per task —

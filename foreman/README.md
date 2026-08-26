@@ -52,7 +52,7 @@ event per state change:
 | `COMPACT` | informational — it self-compacted at 55% |
 | `TURNS` | 80% of the turn cap used — narrow scope or prepare a successor |
 | `BUDGET` | cap reached; successor or descope |
-| `DONE` | verify the acceptance boxes before advancing |
+| `DONE` | verify the acceptance boxes, then `integrate.sh` to merge the branch back |
 | `FAILED` | fix the brief, then respawn |
 
 Compaction fires at 55% via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. A `PreCompact` hook writes
