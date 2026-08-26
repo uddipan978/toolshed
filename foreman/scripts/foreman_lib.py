@@ -250,9 +250,28 @@ def all_tasks(root: Path) -> list[dict]:
     return sorted(tasks, key=lambda t: t["id"])
 
 
+# --- layout ---------------------------------------------------------------
+# .foreman/        tracked   — what the team reads: spec, tasks, decisions, status
+# .foreman/work/   ignored   — what the agents use: sessions, memory, evidence
+#
+# One rule decides which side a file goes on: would a teammate reviewing the PR
+# want it? Task files and decisions, yes. A session's churning status.json, no.
+
+WORK = "work"
+
+
+def work_dir(root: Path) -> Path:
+    """The gitignored agent scratchpad inside .foreman/."""
+    return root / WORK
+
+
+def sessions_dir(root: Path) -> Path:
+    return root / WORK / "sessions"
+
+
 def all_sessions(root: Path) -> list[dict]:
     out = []
-    sdir = root / "sessions"
+    sdir = sessions_dir(root)
     if sdir.is_dir():
         for d in sorted(p for p in sdir.iterdir() if p.is_dir()):
             st = load_json(d / "status.json")

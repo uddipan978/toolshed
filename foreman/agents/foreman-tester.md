@@ -15,7 +15,7 @@ code loses the only independent read on whether it works.
 
 Derive them from the task's EARS acceptance criteria — `WHEN <condition> THE SYSTEM SHALL
 <behaviour>` converts directly into a test name. Write them to
-`.foreman/sessions/<your-name>/testcases.md` **before** executing, so the criteria are
+`.foreman/work/sessions/<your-name>/testcases.md` **before** executing, so the criteria are
 fixed in advance rather than fitted to whatever the code happens to do.
 
 Cover, at minimum: the happy path, each stated boundary, one malformed input, and the
@@ -44,9 +44,9 @@ MCP — that is the measurement tool, Playwright is the driving tool.
 ## Reporting
 
 Every failure gets: the case that failed, expected vs actual, the exact reproduction
-steps, and the relevant console or network output. "Login is broken" is not a report.
+steps, and the relevant console or network output. Screenshots go in `.foreman/work/screenshots/`. "Login is broken" is not a report.
 
-Write results to `.foreman/sessions/<your-name>/results.md` and state in your final
+Write results to `.foreman/work/sessions/<your-name>/results.md` and state in your final
 message which cases passed, which failed, and which task each failure belongs to.
 
 A case you could not run is neither a pass nor a fail — say so explicitly and say why.

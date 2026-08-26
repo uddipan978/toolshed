@@ -122,50 +122,212 @@ _As load-bearing as Build._
 ## Activity log
 """
 
-GITIGNORE = """# Captured worker streams are large and regenerable.
-sessions/*/stream.jsonl
-sessions/*/stderr.log
-dashboard.html
+MEMORY = """# Working memory
+
+> **Read this first.** The running state of the work.
+> `.foreman/work/` is gitignored, so nothing here ships — machine-local detail is
+> safe to record. Update this at the end of every unit of work.
+>
+> The team-facing view is `../STATUS.md` and `../board.md`. This file is for agents.
+
+**Last updated:** _never_
+**Branch:** _unknown_ · **uncommitted:** _unknown_
+
+---
+
+## 0. Immediate attention
+
+Things the next agent must not walk past. Severity first, newest last.
+Use 🔴 for "this blocks work" and 🟠 for "this will bite you".
+
+| | Item | Where |
+|---|---|---|
+| | _nothing yet_ | |
+
+## 1. What is in flight
+
+Which tasks are being worked, by which session, and what state each is really in —
+including anything the task file does not yet say.
+
+## 2. What was just finished
+
+The last few units of work, and anything they changed that other tasks depend on.
+
+## 3. Known traps
+
+Things that already cost someone an hour. Be concrete: the symptom, the cause, the fix.
+
+## 4. Open threads
+
+Started but not finished. What was tried, what remains.
+"""
+
+GLOSSARY = """# Glossary
+
+The domain vocabulary. **Use these words exactly.**
+
+Several terms usually have near-synonyms that mean something subtly different, and the
+difference is often a correctness or security boundary. Record the distinction, not just
+the definition.
+
+Every entry should be checked against source, with the date it was checked.
+
+---
+
+## The parties
+_Who is involved, and what each is allowed to decide._
+
+## The core objects
+_The nouns the system is about, and the states they move through._
+
+## Words that look interchangeable but are not
+_The highest-value section. One line each on why the distinction matters._
+
+| Term | Not to be confused with | Why it matters |
+|---|---|---|
+"""
+
+CODE_STANDARDS = """# Code standards
+
+What a review reviews against, and what any agent writing code here must not break.
+
+**Map to the authorities, do not copy them.** If this repo already documents its
+standards, point at those files and record only what is not written down elsewhere. A
+second copy goes stale and then actively misleads.
+
+Order rules by consequence: correctness and security first, taste last. A change that
+breaks a §1 rule is wrong regardless of how clean it looks.
+
+---
+
+## 1. Invariants — never break these
+_Rules where a violation is a defect, not a preference. Note which are enforced by a
+test, and which are honoured by hand._
+
+## 2. Structure and boundaries
+_Where things live, what may import what, which layers own which decisions._
+
+## 3. Testing
+_What must have a test, at which seam, and what a good test looks like here._
+
+## 4. Taste
+_Naming, formatting, idiom. Real but negotiable._
+"""
+
+DOMAIN = """# Domain docs
+
+How to consume this repository's documentation before exploring the code.
+
+The risk in a well-documented repo is not missing documentation — it is **trusting a
+stale section**. Say which documents are authoritative, in what order to read them, and
+which parts are known to drift.
+
+---
+
+## 1. Read these, in order, stopping when you have enough
+
+1. _highest authority first_
+
+## 2. Where status actually lives
+
+Status lives in the task file, not in commit messages. Note here if any area of this
+repo deviates from that.
+
+## 3. Known stale sections
+
+| Document | Section | Why it drifts | Trust instead |
+|---|---|---|---|
+"""
+
+ADR_TEMPLATE = """# ADR {num} — {title}
+
+**Date** {date} · **Status** proposed | accepted | superseded by ADR-{num}
+
+## Context
+What forces are at play. What made this a decision rather than an obvious step.
+
+## Decision
+What we are doing, stated plainly and in the active voice.
+
+## Consequences
+What becomes easier, what becomes harder, and what we are now committed to.
+
+## Alternatives considered
+What else was on the table and why it lost. This is what stops the decision being
+re-litigated in six months.
+"""
+
+GITIGNORE = """# The agent scratchpad. Sessions, working memory, evidence and the
+# generated dashboard — none of it should reach a teammate's checkout.
+work/
 """
 
 README = """# .foreman
 
 Working directory for the `foreman` SDLC orchestration plugin.
 
+It has two halves, and one question decides which side a file belongs on:
+**would a teammate reviewing the pull request want this?**
+
+## Tracked — commit this
+
+What the team reads. Stable, reviewable, meaningful in a diff.
+
 | Path | What it is |
 |---|---|
+| `STATUS.md` | generated markdown board — start here, renders anywhere |
+| `board.html` | generated visual board — open in a browser, no plugin needed |
+| `board.md` | Obsidian Kanban view — drag-and-drop |
+| `REQUIREMENTS.md` | the grilled requirement, EARS acceptance criteria |
 | `constitution.md` | project non-negotiables and the run/build/test commands |
-| `REQUIREMENTS.md` | the grilled requirement with EARS acceptance criteria |
+| `CRITIQUE.md` | the adversarial review the plan survived |
 | `modules/M*/MODULE.md` | one file per module |
 | `modules/M*/tasks/T-*.md` | one file per task — **the source of truth** |
-| `sessions/<name>/` | per-worker brief, status, captured stream, handovers |
 | `decisions/D*.md` | human-in-the-loop ledger, including auto-selected calls |
-| `board.md` | Obsidian Kanban view — derived, regenerable |
-| `dashboard.html` | browser view — derived, regenerable |
+| `adr/NNNN-*.md` | architectural decisions with lasting consequences |
+| `agents/glossary.md` | domain vocabulary — use these words exactly |
+| `agents/code-standards.md` | what a review reviews against |
+| `agents/domain.md` | how to read this repo's docs, and which parts drift |
 | `log.md` | append-only activity log |
 
-`board.md` and `dashboard.html` are generated from the task files. Delete them any
-time; `/foreman:board` rebuilds both.
+`STATUS.md`, `board.html` and `board.md` are generated from the task files. Delete any
+of them; `/foreman:board` rebuilds them. Three formats because no one format reaches
+everyone: a `board.md` wikilink renders as literal text on GitHub, and a repo browser
+shows HTML as source.
 
-## Committing
+## Scratchpad — `work/`, gitignored
 
-This directory is meant to be committed — it is the provenance of how the code got
-written. What lands in git:
+What the agents use. Churns constantly, machine-local, worthless to a reviewer.
 
-| Committed | Ignored |
+| Path | What it is |
 |---|---|
-| task and module files, `REQUIREMENTS.md`, `constitution.md` | `sessions/*/stream.jsonl` (large, regenerable) |
-| `board.md`, `log.md`, `decisions/` | `sessions/*/stderr.log` |
-| `sessions/*/brief.md`, `progress.md`, `handover-*.md`, `status.json` | `dashboard.html` (derived) |
+| `work/memory.md` | **read this first** — running state, immediate attention |
+| `work/sessions/<name>/` | brief, progress, status, captured stream, handovers |
+| `work/research/` | investigation notes that feed tasks |
+| `work/screenshots/` | evidence from testers and beta review |
+| `work/errors/` | failure triage in progress |
+| `work/dashboard.html` | generated browser view |
 
-`status.json` is rewritten on every supervisor sweep, so expect it to show as
-modified while a run is in flight. Commit at the end of a run, not during one.
+Nothing in `work/` ships. That is exactly what makes it safe to record a branch name,
+an uncommitted change or a half-formed theory there.
 
-Worker worktrees live outside this directory at `<project>/.claude/worktrees/` and are
-added to the project `.gitignore` by the scaffolder.
+## Why sessions are not tracked
 
-Status legend: `[ ]` backlog · `[>]` planned · `[~]` in progress · `[t]` in test ·
-`[b]` beta · `[x]` done · `[!]` blocked · `[?]` awaiting human.
+`status.json` is rewritten on every supervisor sweep and handovers are transient
+scaffolding. The durable record of how a task got built is the **task file's Activity
+log**, which carries the Verify command and its real output. That is what a reviewer
+needs; the session directory is only how it got made.
+
+## Worker worktrees
+
+They live outside this directory at `<project>/.claude/worktrees/` and are added to the
+project `.gitignore` by the scaffolder. `scripts/integrate.sh` merges a finished
+worker's branch back and removes its worktree.
+
+## Status legend
+
+`[ ]` backlog · `[>]` planned · `[~]` in progress · `[t]` in test ·
+`[b]` beta · `[x]` done · `[!]` blocked · `[?]` awaiting human
 """
 
 
@@ -199,7 +361,8 @@ def ensure_gitignore(project: Path) -> list[str]:
 def scaffold(project: Path, force: bool) -> list[str]:
     root = project / ".foreman"
     created = []
-    for d in ("modules", "sessions", "decisions", "templates"):
+    for d in ("modules", "decisions", "templates", "adr", "agents",
+              "work", "work/sessions", "work/research", "work/screenshots", "work/errors"):
         (root / d).mkdir(parents=True, exist_ok=True)
 
     files = {
@@ -210,6 +373,11 @@ def scaffold(project: Path, force: bool) -> list[str]:
         "log.md": "# Activity log\n\nAppend-only. Newest entries at the bottom.\n\n",
         "templates/MODULE.md": MODULE_TEMPLATE,
         "templates/TASK.md": TASK_TEMPLATE,
+        "templates/ADR.md": ADR_TEMPLATE,
+        "agents/glossary.md": GLOSSARY,
+        "agents/code-standards.md": CODE_STANDARDS,
+        "agents/domain.md": DOMAIN,
+        "work/memory.md": MEMORY,
     }
     for rel, body in files.items():
         p = root / rel

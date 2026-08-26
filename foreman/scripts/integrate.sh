@@ -45,8 +45,19 @@ if [[ -d "$WT" ]] && [[ -n "$(git -C "$WT" status --porcelain)" ]]; then
   git -C "$WT" commit -q -m "foreman($NAME): work in progress at integration" || true
 fi
 
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "integrate.sh: base branch '$BASE' has uncommitted changes. Commit or stash first." >&2
+# Foreman's own bookkeeping is always uncommitted at this point — the scaffold, the
+# board, the task file the manager just touched. That must not block a code merge, and
+# the worker branch carries its own version of those files, so commit ours first.
+if [[ -n "$(git status --porcelain -- .foreman .gitignore)" ]]; then
+  git add -A -- .foreman .gitignore
+  git commit -q -m "foreman: bookkeeping before integrating $NAME" || true
+fi
+
+# Anything dirty OUTSIDE .foreman/ is the user's own work. Never merge over it.
+if [[ -n "$(git status --porcelain | grep -vE ' (\.foreman/|\.gitignore)' || true)" ]]; then
+  echo "integrate.sh: '$BASE' has uncommitted changes outside .foreman/:" >&2
+  git status --short | grep -vE ' (\.foreman/|\.gitignore)' | sed 's/^/    /' >&2
+  echo "  commit or stash them first — Foreman will not merge over your work" >&2
   exit 1
 fi
 

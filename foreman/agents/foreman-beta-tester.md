@@ -52,7 +52,7 @@ established pattern when you think something deviates without reason.
 Rate each finding 0–4 by severity — 0 cosmetic, 4 blocks the task. Rank by severity, and
 lead your report with the single thing you would fix first.
 
-Write to `.foreman/sessions/<your-name>/beta-review.md`. Include the screenshots.
+Write to `.foreman/work/sessions/<your-name>/beta-review.md`. Put screenshots in `.foreman/work/screenshots/` and reference them by path.
 
 Two rules on tone. Every finding names a specific place and a specific fix — "the UX is
 confusing" is unusable. And say what worked: a report that is only complaints gets

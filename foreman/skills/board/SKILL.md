@@ -8,15 +8,26 @@ allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/*)
 
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/board.py --root .foreman
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/dashboard.py --root .foreman --static
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/dashboard.py --root .foreman
 ```
 
-Both are **derived from the task files**. Never hand-edit either one — an edit to
-`board.md` is lost on the next regeneration, and the Obsidian plugin rewrites the file
+Run all three. They are the same data for three different audiences:
+
+| File | Tracked | Who it is for |
+|---|---|---|
+| `STATUS.md` | yes | **the default.** Plain markdown — renders in a repo browser, an editor, anywhere |
+| `board.html` | yes | a teammate who cloned and wants the visual board, no plugin needed |
+| `board.md` | yes | you, in Obsidian — drag-and-drop |
+| `work/dashboard.html` | no | the live ops console: session gauges, spend, alerts |
+
+All four are **derived from the task files**. Never hand-edit any of them — an edit to
+`board.md` is lost on the next regeneration, and the Obsidian plugin rewrites that file
 anyway when it opens it.
 
-`board.md` opens as a drag-and-drop board in Obsidian. `dashboard.html` opens in any
-browser with no plugin, and carries the session gauges the board cannot show.
+`board.html` is deliberately deterministic — no timestamp, no live session state — so it
+only shows a diff when task state actually changed. `work/dashboard.html` carries the
+volatile detail and never ships.
 
 ## Reporting status
 

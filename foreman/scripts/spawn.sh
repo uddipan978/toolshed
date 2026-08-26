@@ -36,7 +36,9 @@ done
 
 ROOT="$(cd "$(dirname "$ROOT")" && pwd)/$(basename "$ROOT")"
 PROJECT_DIR="$(dirname "$ROOT")"
-SDIR="$ROOT/sessions/$NAME"
+# Session state is scratchpad, not provenance: it churns every sweep and the
+# durable record is the task file's Activity log.
+SDIR="$ROOT/work/sessions/$NAME"
 mkdir -p "$SDIR"
 
 SESSION_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
@@ -49,6 +51,17 @@ DEADLINE_TS=$(( STARTED + DEADLINE * 60 ))
 CWD="$PROJECT_DIR"
 BRANCH=""
 if [[ "$WORKTREE" == "yes" ]] && git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  # A worktree is a fresh checkout of the branch, so anything uncommitted is
+  # invisible inside it. .foreman/ is almost always uncommitted at spawn time,
+  # which would hand the worker a tree with no task file, no constitution and no
+  # glossary — it cannot do its job and is right to refuse. Commit the tracked
+  # half first. work/ is gitignored, so this only ever picks up real artefacts.
+  # .gitignore is included because it carries the worktree exclusion — leaving it
+  # untracked is how a worker worktree eventually gets committed by accident.
+  if [[ -n "$(git -C "$PROJECT_DIR" status --porcelain -- .foreman .gitignore)" ]]; then
+    git -C "$PROJECT_DIR" add -A -- .foreman .gitignore
+    git -C "$PROJECT_DIR" commit -q -m "foreman: bookkeeping before spawning $NAME" || true
+  fi
   WT="$PROJECT_DIR/.claude/worktrees/foreman-$NAME"
   BRANCH="foreman/$NAME"
   if [[ ! -d "$WT" ]]; then
@@ -63,6 +76,23 @@ fi
 # copying it onto itself would abort the script under set -e.
 if [[ "$(cd "$(dirname "$BRIEF")" && pwd)/$(basename "$BRIEF")" != "$SDIR/brief.md" ]]; then
   cp "$BRIEF" "$SDIR/brief.md"
+fi
+
+# The worker runs in the worktree, so "your session directory" must be absolute —
+# a relative path would land inside the worktree, where the supervisor and the
+# handover hook never look.
+if ! grep -q "## Where to write your working files" "$SDIR/brief.md"; then
+cat >> "$SDIR/brief.md" <<BRIEF
+
+## Where to write your working files
+Your session directory is \`$SDIR\`. Use that absolute path.
+- progress notes  -> \`$SDIR/progress.md\`
+- anything else you want the manager to see -> the same directory
+
+The project root for this task is \`$CWD\` (your own git worktree on branch
+\`$BRANCH\`). Task files, the constitution and the glossary are under
+\`$CWD/.foreman/\` — read them there, and update the task file there.
+BRIEF
 fi
 
 # crossSessionInbound:accept is REQUIRED. Without it an unattended worker holds

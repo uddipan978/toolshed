@@ -31,7 +31,11 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.py .
 
 ## Step 1 — route
 
-Read `.foreman/` and decide where this run picks up. Do not restart a gate that already
+**Read `.foreman/work/memory.md` first.** If a previous session left anything under
+*Immediate attention*, deal with it before starting new work — that table exists because
+someone already paid for the lesson.
+
+Then read `.foreman/` and decide where this run picks up. Do not restart a gate that already
 has its artefact.
 
 | State on disk | Go to |
@@ -66,9 +70,17 @@ ask and record it in `.foreman/log.md`.
 
 ## Standing rules for this whole run
 
-**Task files are the source of truth.** `board.md` and `dashboard.html` are derived views;
-regenerate them, never hand-edit them. Status lives in the task file, not in a commit
-message and not in your head.
+**Task files are the source of truth.** `STATUS.md`, `board.md` and `dashboard.html` are
+derived views; regenerate them, never hand-edit them. Status lives in the task file, not
+in a commit message and not in your head.
+
+**`.foreman/` is tracked; `.foreman/work/` is not.** The line is one question: would a
+teammate reviewing the PR want this? Tasks, decisions and the glossary, yes. A session's
+churning `status.json`, no. Machine-local state — branch, uncommitted work, half-formed
+theories — goes in `work/memory.md`, which never ships.
+
+**Keep `work/memory.md` current.** It is what a fresh session reads first, and its
+**Immediate attention** table is what stops the next agent walking into a known trap.
 
 **Estimate in LLM units** — turns, tool calls, complexity band, phases. Never days or
 hours. A human calendar estimate for agent work is a fiction that misleads everyone.

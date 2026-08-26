@@ -32,7 +32,7 @@ on. Never poll workers with "are you done?" — the supervisor is how you know.
 
 ## Brief, then spawn
 
-Write `.foreman/sessions/<name>/brief.md` carrying **all four fields**. A brief missing any
+Write `.foreman/work/sessions/<name>/brief.md` carrying **all four fields**. A brief missing any
 of them produces duplicated work or silent gaps:
 
 ```markdown
@@ -55,7 +55,7 @@ Then:
 
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/scripts/spawn.sh --name dev-m01-02 --agent foreman-developer \
-  --brief .foreman/sessions/dev-m01-02/brief.md --root .foreman \
+  --brief .foreman/work/sessions/dev-m01-02/brief.md --root .foreman \
   --budget 15 --turns 120 --deadline 60
 ```
 
@@ -84,7 +84,7 @@ When a task's development passes, spawn a tester against it:
 
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/scripts/spawn.sh --name test-m01-02 --agent foreman-tester \
-  --brief .foreman/sessions/test-m01-02/brief.md --root .foreman --deadline 45
+  --brief .foreman/work/sessions/test-m01-02/brief.md --root .foreman --deadline 45
 ```
 
 Set the task status to `in_test`. A failure routes back to the developer who wrote it, with
@@ -115,7 +115,7 @@ this gate is about the feature as a whole.
 
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/scripts/spawn.sh --name beta-m01 --agent foreman-beta-tester \
-  --brief .foreman/sessions/beta-m01/brief.md --root .foreman --deadline 45
+  --brief .foreman/work/sessions/beta-m01/brief.md --root .foreman --deadline 45
 ```
 
 The brief must tell it how to run the app (from `constitution.md`) and point at the user

@@ -18,7 +18,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from foreman_lib import append_log, load_json, pid_alive, read_stream, save_json  # noqa: E402
+from foreman_lib import (append_log, load_json, pid_alive, read_stream,  # noqa: E402
+                         save_json, sessions_dir)
 
 QUIET_LOG = 10 * 60
 QUIET_POKE = 15 * 60
@@ -75,13 +76,13 @@ def assess(sdir: Path, now: float) -> dict:
 
 
 def sweep(root: Path, once: bool = False) -> None:
-    sessions_dir = root / "sessions"
+    sdirs = sessions_dir(root)
     seen: dict[str, str] = {}
 
     while True:
         now = time.time()
-        if sessions_dir.is_dir():
-            for sdir in sorted(p for p in sessions_dir.iterdir() if p.is_dir()):
+        if sdirs.is_dir():
+            for sdir in sorted(p for p in sdirs.iterdir() if p.is_dir()):
                 a = assess(sdir, now)
                 if not a:
                     continue

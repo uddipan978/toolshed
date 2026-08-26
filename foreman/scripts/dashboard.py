@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from foreman_lib import all_sessions, all_tasks  # noqa: E402
+from foreman_lib import all_sessions, all_tasks, sessions_dir, work_dir  # noqa: E402
 from board import LANES  # noqa: E402
 
 GATES = [("G0", "Intake"), ("G1", "Plan"), ("G2", "Critique"), ("G3", "Develop"),
@@ -213,7 +213,7 @@ def compute(root: Path):
 
     spend = sum(float(s.get("cost_usd") or 0) for s in sessions)
     turns = sum(int(s.get("turns") or 0) for s in sessions)
-    handovers = sum(len(list((root / "sessions" / s["name"]).glob("handover-*.md")))
+    handovers = sum(len(list((sessions_dir(root) / s["name"]).glob("handover-*.md")))
                     for s in sessions if s.get("name"))
     reworked = sum(1 for s in sessions if int(s.get("gate_blocks") or 0) > 0)
     live = [s for s in sessions if str(s.get("state", "")).startswith(("running", "quiet"))]
@@ -257,7 +257,10 @@ def compute(root: Path):
                 reached=reached, badges=badges)
 
 
-def render(root: Path) -> str:
+def render(root: Path, static: bool = False) -> str:
+    """static=True produces the tracked board.html: no timestamp, no live session
+    state. That makes the file deterministic, so it only shows a diff when task
+    state actually changed — which is the only diff a reviewer wants to see."""
     d = compute(root)
     tasks, sessions = d["tasks"], d["sessions"]
     total, done = d["total"], d["done"]
@@ -268,10 +271,12 @@ def render(root: Path) -> str:
 
     # masthead
     p.append('<div class="top"><div class="brand"><div class="mark">'
-             f'<span class="dot{"" if live_now else " idle"}"></span><h1>FOREMAN</h1></div>'
-             f'<div class="slug">{esc(root.parent.name)} · '
-             f'{"● " + str(len(d["live"])) + " session(s) live" if live_now else "idle"} · '
-             f'{time.strftime("%Y-%m-%d %H:%M")}</div></div>')
+             f'<span class="dot{"" if live_now and not static else " idle"}"></span><h1>FOREMAN</h1></div>'
+             f'<div class="slug">{esc(root.parent.name)}'
+             + ('' if static else
+                f' · {"● " + str(len(d["live"])) + " session(s) live" if live_now else "idle"}'
+                f' · {time.strftime("%Y-%m-%d %H:%M")}')
+             + '</div></div>')
     p.append(f'<div class="ring">{ring(pct)}<div><div class="pct">{pct:.0f}%</div>'
              f'<div class="lbl">{len(done)}/{total} tasks</div></div></div></div>')
 
@@ -280,14 +285,17 @@ def render(root: Path) -> str:
         ("live" if d["ac_total"] and d["ac_done"] == d["ac_total"] else "", "Criteria met",
          f'{d["ac_done"]}/{d["ac_total"]}', "verified, not claimed"),
         ("", "Tasks", f'{len(done)}/{total}', "shipped / planned"),
-        ("", "Sessions", f'{len(sessions)}', f'{len(d["live"])} live'),
-        ("", "Turns", f'{d["turns"]:,}', "across all workers"),
-        ("", "Spend", f'${d["spend"]:.2f}', "settled runs only"),
-        ("warn" if d["handovers"] else "", "Handovers", f'{d["handovers"]}',
-         "context compactions"),
-        ("bad" if d["alerts"] else "", "Alerts", f'{len(d["alerts"])}',
-         "stuck or overdue" if d["alerts"] else "all clear"),
     ]
+    if not static:
+        tiles += [
+            ("", "Sessions", f'{len(sessions)}', f'{len(d["live"])} live'),
+            ("", "Turns", f'{d["turns"]:,}', "across all workers"),
+            ("", "Spend", f'${d["spend"]:.2f}', "settled runs only"),
+            ("warn" if d["handovers"] else "", "Handovers", f'{d["handovers"]}',
+             "context compactions"),
+            ("bad" if d["alerts"] else "", "Alerts", f'{len(d["alerts"])}',
+             "stuck or overdue" if d["alerts"] else "all clear"),
+        ]
     p.append('<div class="rail">')
     for cls, k, v, s in tiles:
         p.append(f'<div class="stat {cls}"><div class="k">{esc(k)}</div>'
@@ -325,7 +333,7 @@ def render(root: Path) -> str:
                     tg.append('<span class="tag p">// parallel</span>')
                 if t["needs_clarification"]:
                     tg.append('<span class="tag w">needs clarification</span>')
-                s = livemap.get(t["session"])
+                s = None if static else livemap.get(t["session"])
                 if s and s.get("state") in ("stuck", "overdue"):
                     tg.append(f'<span class="tag b">{esc(s["state"])}</span>')
                 if t["session"]:
@@ -345,55 +353,59 @@ def render(root: Path) -> str:
         p.append("</div>")
 
     # sessions
-    p.append("<h2>Sessions</h2>")
-    if not sessions:
-        p.append('<div class="empty">no worker sessions spawned</div>')
-    else:
-        p.append('<div class="sess">')
-        for s in sessions:
-            state = str(s.get("state") or "unknown")
-            base = state.split(":")[0]
-            alert = " alert" if base in ("stuck", "overdue") else ""
-            cpct = float(s.get("context_pct") or 0)
-            thr = float(s.get("compact_pct") or 55)
-            cost = float(s.get("cost_usd") or 0)
-            budget = float(s.get("budget_usd") or 0)
-            turns = int(s.get("turns") or 0)
-            mt = int(s.get("max_turns") or 0)
-            dl = s.get("deadline_ts")
-            start = s.get("started_at")
-            settled = base in ("done", "stopped", "unknown")
-            dl_txt = "—"
-            dl_pct = 0.0
-            if settled:
-                dl = None          # a finished session is not "overdue"
-            if dl and start:
-                span = max(dl - start, 1)
-                dl_pct = 100.0 * (time.time() - start) / span
-                left = int((dl - time.time()) // 60)
-                dl_txt = f"{left}m left" if left > 0 else f"{-left}m over"
-            p.append(f'<div class="sc{alert}"><header><div><div class="nm">{esc(s.get("name"))}</div>'
-                     f'<div class="ag">{esc(s.get("agent"))} · {esc(s.get("model") or "—")}</div></div>'
-                     f'<span class="pill {esc(base)}">{esc(state)}</span></header><div class="gauges">')
-            p.append(gauge("ctx", cpct, f"{cpct:.0f}% / {thr:.0f}%", threshold=thr))
-            if budget:
-                p.append(gauge("spend", 100 * cost / budget, f"${cost:.2f} / ${budget:.0f}"))
-            if mt:
-                p.append(gauge("turns", 0 if settled else 100 * turns / mt, f"{turns} / {mt}"))
-            if dl:
-                p.append(gauge("time", dl_pct, dl_txt))
-            if settled:
-                took = ""
-                if start and s.get("updated_at"):
-                    took = f' in {int((int(s["updated_at"]) - int(start)) // 60)}m'
-                p.append(f'<div class="g"><span class="gk">ran</span>'
-                         f'<span class="gv" style="grid-column:2/4">{esc(turns)} turns{esc(took)}</span></div>')
-            p.append("</div></div>")
-        p.append("</div>")
+    # Sessions are live, machine-local state — excluded from the tracked board.
+    if not static:
+        p.append("<h2>Sessions</h2>")
+        if not sessions:
+            p.append('<div class="empty">no worker sessions spawned</div>')
+        else:
+            p.append('<div class="sess">')
+            for s in sessions:
+                state = str(s.get("state") or "unknown")
+                base = state.split(":")[0]
+                alert = " alert" if base in ("stuck", "overdue") else ""
+                cpct = float(s.get("context_pct") or 0)
+                thr = float(s.get("compact_pct") or 55)
+                cost = float(s.get("cost_usd") or 0)
+                budget = float(s.get("budget_usd") or 0)
+                turns = int(s.get("turns") or 0)
+                mt = int(s.get("max_turns") or 0)
+                dl = s.get("deadline_ts")
+                start = s.get("started_at")
+                settled = base in ("done", "stopped", "unknown")
+                dl_txt = "—"
+                dl_pct = 0.0
+                if settled:
+                    dl = None          # a finished session is not "overdue"
+                if dl and start:
+                    span = max(dl - start, 1)
+                    dl_pct = 100.0 * (time.time() - start) / span
+                    left = int((dl - time.time()) // 60)
+                    dl_txt = f"{left}m left" if left > 0 else f"{-left}m over"
+                p.append(f'<div class="sc{alert}"><header><div><div class="nm">{esc(s.get("name"))}</div>'
+                         f'<div class="ag">{esc(s.get("agent"))} · {esc(s.get("model") or "—")}</div></div>'
+                         f'<span class="pill {esc(base)}">{esc(state)}</span></header><div class="gauges">')
+                p.append(gauge("ctx", cpct, f"{cpct:.0f}% / {thr:.0f}%", threshold=thr))
+                if budget:
+                    p.append(gauge("spend", 100 * cost / budget, f"${cost:.2f} / ${budget:.0f}"))
+                if mt:
+                    p.append(gauge("turns", 0 if settled else 100 * turns / mt, f"{turns} / {mt}"))
+                if dl:
+                    p.append(gauge("time", dl_pct, dl_txt))
+                if settled:
+                    took = ""
+                    if start and s.get("updated_at"):
+                        took = f' in {int((int(s["updated_at"]) - int(start)) // 60)}m'
+                    p.append(f'<div class="g"><span class="gk">ran</span>'
+                             f'<span class="gv" style="grid-column:2/4">{esc(turns)} turns{esc(took)}</span></div>')
+                p.append("</div></div>")
+            p.append("</div>")
 
     # badges
+    session_derived = {"First Pass", "No Handover", "Under Budget"}
+    badges = [b for b in d["badges"] if not (static and b[1] in session_derived)]
     p.append("<h2>Run badges</h2><div class=\"badges\">")
-    for icon, title, desc, earned in d["badges"]:
+    for icon, title, desc, earned in badges:
         p.append(f'<div class="badge{" on" if earned else ""}"><span class="ic">{icon}</span>'
                  f'<div><div class="bt">{esc(title)}</div><div class="bd">{esc(desc)}</div></div></div>')
     p.append("</div>")
@@ -423,16 +435,23 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".foreman")
     ap.add_argument("--open", action="store_true")
+    ap.add_argument("--static", action="store_true",
+                    help="write the tracked board.html: no timestamp, no live session state")
     a = ap.parse_args()
     root = Path(a.root).resolve()
     if not root.is_dir():
         sys.exit(f"dashboard.py: no such directory: {root}")
-    out = root / "dashboard.html"
+
+    if a.static:
+        out = root / "board.html"          # tracked, deterministic
+    else:
+        out = work_dir(root) / "dashboard.html"   # scratchpad, live
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>Foreman — {html.escape(root.parent.name)}</title></head><body>"
-        f"{render(root)}</body></html>\n")
+        f"{render(root, static=a.static)}</body></html>\n")
     print(f"wrote {out}")
     if a.open:
         subprocess.run(["open", str(out)], check=False)

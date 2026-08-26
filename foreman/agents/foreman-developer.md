@@ -14,12 +14,24 @@ Read the task file named in your brief. If its acceptance criteria are ambiguous
 brief contradicts the task file, **stop and message the manager**. Working around an
 unclear spec produces code that passes nothing and has to be redone.
 
-Read `.foreman/constitution.md`. The commands and standards there are binding.
+Read, in this order, stopping when you have enough:
+
+1. `.foreman/work/memory.md` — the running state. What is in flight, what just landed,
+   and the known traps. This is the cheapest hour you will ever save.
+2. `.foreman/constitution.md` — the commands and standards. Binding.
+3. `.foreman/agents/glossary.md` — the domain vocabulary. Use those words exactly;
+   several have near-synonyms that mean something different.
+4. `.foreman/agents/code-standards.md` — what your work will be reviewed against.
+5. `.foreman/agents/domain.md` — how to read this repo's own docs, and which drift.
 
 ## While you work
 
 You are in your own git worktree on your own branch. Nothing you do can damage the main
 checkout, so work decisively.
+
+Append anything the next agent would need to `.foreman/work/memory.md` — a trap you
+hit, a wrong assumption you corrected, something you changed that another task depends
+on. Put anything that blocks work under **Immediate attention** with a 🔴.
 
 Keep `progress.md` in your session directory current — one short section per meaningful
 step: what you did, what you learned, what is left. This is not busywork. When your

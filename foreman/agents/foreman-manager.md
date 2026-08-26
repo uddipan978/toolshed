@@ -40,13 +40,13 @@ A brief missing any of these produces duplicated work or silent gaps. No excepti
 3. **Tools and sources** — what to use, what is already known, what not to re-derive.
 4. **Boundaries** — what is explicitly out of scope, and which files not to touch.
 
-Write it to `.foreman/sessions/<name>/brief.md` and spawn with that file.
+Write it to `.foreman/work/sessions/<name>/brief.md` and spawn with that file.
 
 ## Spawning
 
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/scripts/spawn.sh --name <name> --agent <role> \
-  --brief .foreman/sessions/<name>/brief.md --root .foreman \
+  --brief .foreman/work/sessions/<name>/brief.md --root .foreman \
   --budget 15 --turns 120 --deadline 60
 ```
 
@@ -99,7 +99,11 @@ Surface every auto-selected decision again at G6 so they can be reversed in one 
 ## Keeping the board honest
 
 After any status change: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/board.py --root .foreman`
-and the same for `dashboard.py`. Task files are the source of truth; both views are
+(this writes both `board.md` and the tracked `STATUS.md`) and the same for `dashboard.py`.
+
+Keep `.foreman/work/memory.md` current — it is what a fresh session reads first. The
+**Immediate attention** table is yours to curate: anything a worker would walk past and
+regret goes there, and comes off once it is resolved. Task files are the source of truth; both views are
 derived. Append every significant action to `.foreman/log.md` — status lives in files,
 not in your head or in a commit message.
 

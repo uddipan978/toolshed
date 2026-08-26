@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from foreman_lib import load_json, read_stream, run  # noqa: E402
+from foreman_lib import load_json, read_stream, run, sessions_dir  # noqa: E402
 
 # Redact anything that looks like a credential before it lands in a file that
 # becomes the next session's prompt.
@@ -56,7 +56,7 @@ def session_dir(payload: dict) -> Path | None:
     root = os.environ.get("FOREMAN_ROOT")
     sid = payload.get("session_id")
     if root and sid:
-        sessions = Path(root) / "sessions"
+        sessions = sessions_dir(Path(root))
         if sessions.is_dir():
             for d in sessions.iterdir():
                 if load_json(d / "status.json").get("session_id") == sid:

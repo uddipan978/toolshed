@@ -65,15 +65,43 @@ manager.
 ## What it writes
 
 ```
-<project>/.foreman/
-├── constitution.md          non-negotiables + run/build/test commands
-├── REQUIREMENTS.md          grilled requirement, EARS acceptance criteria
-├── modules/M*/tasks/T-*.md  one file per task — the source of truth
-├── sessions/<name>/         brief, status, captured stream, handovers
-├── decisions/D*.md          decision ledger, including auto-selected ones
-├── board.md                 Obsidian Kanban view — derived
-└── dashboard.html           browser view — derived
+<project>/.foreman/               ← TRACKED. Commit this.
+├── STATUS.md                     markdown board — a teammate starts here
+├── board.html                    visual board — deterministic, no live state
+├── board.md                      Obsidian drag-and-drop board
+├── REQUIREMENTS.md               grilled requirement, EARS acceptance criteria
+├── constitution.md               non-negotiables + run/build/test commands
+├── CRITIQUE.md                   the review the plan survived
+├── modules/M*/tasks/T-*.md       one file per task — the source of truth
+├── decisions/D*.md               HITL ledger, including auto-selected calls
+├── adr/NNNN-*.md                 architectural decisions
+├── agents/glossary.md            domain vocabulary — use these words exactly
+├── agents/code-standards.md      what a review reviews against
+├── agents/domain.md              how to read this repo's docs, and which drift
+├── log.md                        append-only activity log
+└── work/                        ← GITIGNORED. Agent scratchpad.
+    ├── memory.md                 read this first — running state, immediate attention
+    ├── sessions/<name>/          brief, progress, status, stream, handovers
+    ├── research/  screenshots/  errors/
+    └── dashboard.html            live ops console — session gauges, spend, alerts
 ```
+
+Four views of the same data, because no one format reaches everyone:
+
+| View | Tracked | Reaches |
+|---|---|---|
+| `STATUS.md` | yes | anyone — repo browser, editor, Obsidian |
+| `board.html` | yes | a teammate who cloned; visual, no plugin |
+| `board.md` | yes | you, in Obsidian — drag-and-drop |
+| `work/dashboard.html` | no | the live run: context %, spend, alerts |
+
+A `board.md` wikilink renders as literal text on GitHub, and a repo browser shows HTML
+as source — which is why `STATUS.md` is the default. `board.html` is deliberately
+deterministic (no timestamp, no session state) so it only diffs when task state changed.
+
+**Why sessions are not tracked:** `status.json` is rewritten every supervisor sweep and
+handovers are transient scaffolding. The durable record of how a task got built is the
+task file's Activity log, which carries the Verify command and its real output.
 
 `board.md` and `dashboard.html` are generated. Delete them any time; `/foreman:board`
 rebuilds both.

@@ -30,6 +30,18 @@ same numbers through a supported interface.
 cache_read_input_tokens` from the last assistant message, over the model's window. Output
 tokens are excluded — this matches how Claude Code computes it for the status line.
 
+**A worker that says its task file is missing is telling the truth.** A worktree is a
+fresh checkout of the branch, so anything uncommitted in the main tree is invisible
+inside it — and `.foreman/` is almost always uncommitted when a worker spawns. `spawn.sh`
+commits the tracked half of `.foreman/` before creating the worktree for exactly this
+reason. If you bypass `spawn.sh`, do that commit yourself or the worker gets a tree with
+no task file, no constitution and no glossary.
+
+**Worker working files must use absolute paths.** The worker's cwd is its worktree, so a
+relative `.foreman/work/sessions/<name>/progress.md` resolves inside the worktree — where
+the supervisor and the handover hook never look. `spawn.sh` appends the absolute session
+path to the brief.
+
 ## Cross-session messaging
 
 **A worker that never receives pokes is missing `crossSessionInbound: "accept"`.** Without
