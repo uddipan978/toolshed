@@ -9,19 +9,22 @@
 
 ## Status legend
 
-| Token | Lane | Means |
-|---|---|---|
-| `[ ]` | Backlog | not started |
-| `[>]` | Planned | briefed, waiting on a dependency or a free worker |
-| `[~]` | In Progress | a developer session is working it |
-| `[t]` | In Test | passed G3, a tester session has it |
-| `[b]` | Beta | passed G4, under human-perspective review |
-| `[x]` | Done | acceptance met **and** Verify run |
-| `[!]` | Blocked | reason recorded inline |
-| `[?]` | Awaiting Human | needs a decision only the user can make |
+| Token | Lane | Means | Who writes it |
+|---|---|---|---|
+| `[ ]` | Backlog | not started | planner (G1) |
+| `[>]` | Planned | briefed, waiting on a dependency or a free worker | manager |
+| `[~]` | In Progress | a developer session is working it | manager, on spawn |
+| `[t]` | In Test | G3 passed — developer Verify ran; G4 has it or is next | developer on Verify pass, or manager when spawning the tester |
+| `[b]` | Beta | G4 passed and G5 will run for this module | manager, after G4 |
+| `[x]` | Done | G4 passed **and** G5 passed | manager only |
+| `[!]` | Blocked | reason recorded inline | whoever is blocked |
+| `[?]` | Awaiting Human | needs a decision only the user can make | manager |
 
-Every lane on the board has a token. A lane with no token can never be reached, which
-is how In Test and Beta sat permanently empty before v0.1.2.
+Every lane on the board has a token. A lane with no token can never be reached.
+
+**Developers never write `[x]`.** Developer Verify is G3. The Stop hook rejects
+a developer stop whose task is `[x]` and demands `[t]`. Testers do not set
+`[x]` either — they write `results.md`; the manager advances the token.
 
 ## The clarification marker
 

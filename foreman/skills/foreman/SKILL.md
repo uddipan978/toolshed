@@ -2,20 +2,27 @@
 name: foreman
 description: Runs a requirement through a full gated SDLC — grill, plan, critique, build, test, beta-review, hand off — by spawning and supervising independent Claude sessions with budgets, deadlines and stuck-detection. Use whenever the user asks to build, implement or ship a feature or module of any real size, or says "foreman", "orchestrate this", "run this through the lifecycle", "manage this build", or asks for multi-session or multi-agent development. Also use when work already under Foreman needs resuming, re-planning or a status read. Not for one-line edits, answering questions about existing code, or reviewing a diff (use /code-review).
 argument-hint: "[requirement, or 'status' / 'resume']"
-allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(bash ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(git worktree *), Bash(git status *), Bash(git diff *), Bash(git log *)
+allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(bash ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(python3 ${GROK_PLUGIN_ROOT}/scripts/*), Bash(bash ${GROK_PLUGIN_ROOT}/scripts/*), Bash(${GROK_PLUGIN_ROOT}/scripts/*), Bash(git worktree *), Bash(git status *), Bash(git diff *), Bash(git log *)
 ---
 
 # Foreman
 
 Drives one requirement from a sentence to a verified, human-reviewable feature through
-seven gates, using separate Claude sessions for the work and this session as the manager.
+seven gates, using separate worker sessions for the work and this session as the manager.
 
 **Requirement:** $ARGUMENTS
+
+Entry and exit for every gate: [reference/gates.md](../../reference/gates.md). Read it
+once per run before spawning anything. Do not restate it; follow it.
+
+Worker launch is harness-specific: [reference/harness.md](../../reference/harness.md).
+Claude is the default adapter; Grok uses `GROK_SESSION_ID` or `--harness grok`.
 
 ## Step 0 — preflight, always
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/preflight.py
+PLUGIN_ROOT="${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+python3 "$PLUGIN_ROOT/scripts/preflight.py"
 ```
 
 This installs anything missing and reports what changed. Relay that report to the user in
@@ -26,7 +33,7 @@ a half-satisfied toolchain.
 Then scaffold the project if it isn't already:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.py .
+python3 "$PLUGIN_ROOT/scripts/scaffold.py" .
 ```
 
 ## Step 1 — route
@@ -36,43 +43,71 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.py .
 someone already paid for the lesson.
 
 Then read `.foreman/` and decide where this run picks up. Do not restart a gate that already
-has its artefact.
+has its artefact. **G2 is not an artefact check for `CRITIQUE.md` — it is `--g2-clear`.**
+
+```bash
+python3 "$PLUGIN_ROOT/scripts/verify_gate.py" --g2-clear --root .foreman
+```
 
 | State on disk | Go to |
 |---|---|
 | No `REQUIREMENTS.md`, or it still carries clarification markers | **G0** — `/foreman:intake` |
-| Requirements clean, no `modules/` | **G1** — `/foreman:plan` |
-| Modules exist, no `CRITIQUE.md` | **G2** — `/foreman:critique` |
-| Plan critiqued, tasks not all done | **G3–G5** — `/foreman:run` |
+| Requirements clean, no task files under `modules/*/tasks/` | **G1** — `/foreman:plan` |
+| Task files exist, `--g2-clear` exits non-zero | **G2** — below |
+| `--g2-clear` exits 0, tasks not all `[x]` | **G3–G5** — `/foreman:run` |
 | All tasks `[x]` | **G6** — hand off (below) |
 
 If the user said `status`, skip straight to the board and report — do not advance anything.
 
-## The gates
+**No gate is skipped to save time.** Scale a gate down — never skip it. If the user asks
+you to skip one, say what it protects against, then do as they ask and record it in
+`.foreman/log.md`.
 
-Full entry and exit criteria: [reference/gates.md](../../reference/gates.md). Read it once
-per run before spawning anything.
+## G2 — two steps, both required
 
-| | Gate | Skill |
-|---|---|---|
-| G0 | Intake — grill the requirement until nothing is assumed | `/foreman:intake` |
-| G1 | Plan — modules, tasks, dependencies, parallel markers | `/foreman:plan` |
-| G2 | Critique — adversarial review; findings refuted or fixed | `/foreman:critique` |
-| G3 | Develop — worker sessions, one task each, isolated worktrees | `/foreman:run` |
-| G4 | Test — explicit cases, executed, browser E2E where it applies | `/foreman:run` |
-| G5 | Beta — fresh session, real-user perspective, scored | `/foreman:run` |
-| G6 | Handoff — to the human, with every auto-decision listed | this skill |
+Do **not** critique in this session. The planner must not attack its own plan.
 
-**No gate is skipped to save time.** Scale a gate down for a small change — a thin
-critique, one test session instead of three — but a gate you skipped is a defect you chose
-to ship. If the user asks you to skip one, say what it protects against, then do as they
-ask and record it in `.foreman/log.md`.
+### G2a — spawn the critic
+
+If `CRITIQUE.md` is missing, or `--check-critique` fails, or **Re-critique** is `pending`:
+
+**Claude:** invoke `/foreman:critique` (forked skill). **Grok:** `context: fork` is not a
+skill field — spawn a critic worker, same tree, as in [harness.md](../../reference/harness.md):
+
+```bash
+"$PLUGIN_ROOT/scripts/spawn.sh" --name g2-critic --agent foreman-critic \
+  --brief .foreman/work/sessions/g2-critic/brief.md --root .foreman \
+  --worktree no --deadline 45 --turns 80
+```
+
+When the critic returns:
+
+```bash
+python3 "$PLUGIN_ROOT/scripts/verify_gate.py" --check-critique --root .foreman
+```
+
+Non-zero: re-invoke the critic with the stderr. Do not proceed on a thin file.
+
+### G2b — disposition (this session)
+
+Every finding starts `open`. You set `fixed` or `refuted` and fill **Disposition**.
+Schema: [reference/critique-format.md](../../reference/critique-format.md).
+
+- **`fixed`:** edit the plan as **Change** specified. Quote the edit in **Disposition**.
+  Severity 3–4: set document **Re-critique** to `pending` and return to G2a.
+- **`refuted`:** **Disposition** cites a file-level reason the finding is wrong.
+  Not "we'll live with it" unless the user chose that.
+
+Then re-run `--g2-clear`. Non-zero: stay in G2. Zero: G3–G5.
+
+A `CRITIQUE.md` that exists with open findings is not a passed gate.
 
 ## Standing rules for this whole run
 
 **Task files are the source of truth.** `STATUS.md`, `board.md` and `dashboard.html` are
 derived views; regenerate them, never hand-edit them. Status lives in the task file, not
-in a commit message and not in your head.
+in a commit message and not in your head. Tokens and who may write them:
+[reference/task-format.md](../../reference/task-format.md). Developers never write `[x]`.
 
 **`.foreman/` is tracked; `.foreman/work/` is not.** The line is one question: would a
 teammate reviewing the PR want this? Tasks, decisions and the glossary, yes. A session's

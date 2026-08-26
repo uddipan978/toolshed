@@ -1,16 +1,22 @@
 ---
 name: critique
-description: G2 of the Foreman lifecycle — runs an adversarial review of the plan in an isolated session that tries to refute it, then requires every finding to be fixed or refuted before building starts. Use after planning produces module and task files and before any development session is spawned.
+description: G2 of the Foreman lifecycle — adversarial review of the plan in an isolated session that tries to break it. Writes CRITIQUE.md findings only; does not edit the plan and does not close findings. Use after planning produces module and task files and before any development session is spawned.
 context: fork
 agent: foreman-critic
 background: false
 ---
 
-# G2 — Critique the plan
+# G2a — Attack the plan
 
 You are reviewing a Foreman plan in isolation. You cannot see the conversation that
-produced it, which is the point: you are reading it the way the worker who has to execute
-it will read it.
+produced it, which is the point: you are reading it the way the worker who has to
+execute it will read it.
+
+You write findings. You do not fix the plan. You do not close findings. Default the
+verdict to **not-fit**. A critique that concludes "looks reasonable" bought nothing.
+
+On Grok this skill is not forked (`context: fork` is Claude-only). The manager spawns
+you as a `foreman-critic` worker with `--worktree no` instead. Same job.
 
 ## Read
 
@@ -18,43 +24,52 @@ it will read it.
 - `.foreman/constitution.md`
 - every `.foreman/modules/*/MODULE.md`
 - every `.foreman/modules/*/tasks/*.md`
+- `${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/reference/critique-format.md` — the output schema
+- `${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/reference/gates.md` — severity 0–4
+
+If a previous `.foreman/CRITIQUE.md` exists, read it. Keep existing findings. Do not
+change their **Status** or **Disposition**. If a `fixed` item is still wrong, add a
+new finding that cites it. Set **Re-critique** to `done` when this is a second round.
 
 ## Try to break it
 
-Default to refuted. A critique concluding "looks reasonable" bought nothing.
+**Traceability.** Does every requirement reach a task, and every task reach a
+requirement? Orphans in either direction are the plan's biggest holes — one is
+unbuilt scope, the other is invented scope.
 
-**Traceability.** Does every requirement reach a task, and every task reach a requirement?
-Orphans in either direction are the plan's biggest holes — one is unbuilt scope, the other
-is invented scope.
+**Decomposition.** Are `[P]`-marked tasks genuinely disjoint? Open the files they
+name and check for overlap rather than trusting the marker. Does any task's `Est`
+plus named files look too big for one fresh context (many files, high complexity,
+~80+ turns)? Does the dependency order actually hold?
 
-**Decomposition.** Are `[P]`-marked tasks genuinely disjoint? Open the files they name and
-check for overlap rather than trusting the marker. Does any task exceed one context
-window? Does the dependency order actually hold?
+**Acceptance criteria.** For each one: could this pass while the feature is still
+broken? Criteria that cannot fail are decoration.
 
-**Acceptance criteria.** For each one: could this pass while the feature is still broken?
-Is the Verify command real and runnable? Criteria that cannot fail are decoration.
+**Missing work.** Migrations, auth, error paths, empty states, rollback,
+concurrency, the second user, the malformed input. Plans written from the happy
+path omit the same things every time.
 
-**Missing work.** Migrations, auth, error paths, empty states, rollback, concurrency, the
-second user, the malformed input. Plans written from the happy path omit the same things
-every time.
+**Over-engineering.** Speculative abstraction for a requirement nobody stated?
+Something the codebase already does? Grep before asserting — a confident wrong
+finding is worse than no finding, because someone will act on it.
 
-**Over-engineering.** Speculative abstraction for a requirement nobody stated? Something
-the codebase already does? Grep before asserting — a confident wrong finding is worse than
-no finding, because someone will act on it.
+## Verify commands — existence, not a green suite
 
-## Verify before asserting
+Confirm each task's Verify command exists in `constitution.md`, `package.json`,
+`Makefile`, or `docker-compose.yml`. **Do not execute feature tests.** They will
+fail because the feature is not built, and that is not a finding.
 
-Read the actual file. Run the actual command. Anything you cannot verify goes in marked
-**unverified**, with what would settle it.
+Anything you cannot verify from the files goes in marked **unverified**, with
+what would settle it.
 
-## Write it
+## Write exactly one file
 
-`.foreman/CRITIQUE.md`. Per finding: what is wrong, the concrete failure it causes,
-severity 0–4, and the specific change. Sorted by severity.
+`.foreman/CRITIQUE.md`, to the schema in `reference/critique-format.md`.
 
-End with a plain verdict on whether the plan is fit to build — and if it is, name the
-attacks you tried hardest and could not land. That is what makes the verdict worth
-anything.
+- Every finding **Status** is `open`. Leave **Disposition** empty.
+- Do not edit task files, modules, requirements, constitution, or source.
+- **Re-critique** is `not-required` on the first round; `done` on a later round.
 
-**Every finding must end up refuted or fixed. None may be merely noted.** A critique filed
-and ignored is the most expensive work in the whole lifecycle.
+End with **Attacks that did not land** — required for a `fit` verdict.
+
+Stop. The manager closes findings. You do not.

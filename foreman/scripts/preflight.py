@@ -26,7 +26,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from foreman_lib import load_json, run, save_json  # noqa: E402
+from foreman_lib import (  # noqa: E402
+    detect_harness, load_json, run, save_json, stamp_harness,
+)
 
 OK, MISSING, FAILED, SKIPPED = "ok", "missing", "failed", "skipped"
 
@@ -41,13 +43,11 @@ MARKETPLACES = {
 # Every entry here has a verified upstream. See reference/troubleshooting.md for
 # the sources that were rejected and why.
 PLUGINS = [
-    ("impeccable",        "claude-community",         "G5 design audit, critique and a11y vocabulary"),
-    ("ui-ux-pro-max",     "ui-ux-pro-max-skill",      "G5 design-system lookup (3k+ rows of design data)"),
+    ("impeccable",        "claude-community",         "G5 UI design audit (used when --has-ui is ui)"),
+    ("ui-ux-pro-max",     "ui-ux-pro-max-skill",      "G5 design-system lookup (used when --has-ui is ui)"),
     ("mattpocock-skills", "mattpocock",               "G0 grilling, G1 ticket shape, handover rules, TDD"),
-    ("frontend-design",   "claude-plugins-official",  "preventative anti-slop design direction"),
-    ("skill-creator",     "claude-plugins-official",  "evals for Foreman's own skills"),
+    ("frontend-design",   "claude-plugins-official",  "preventative anti-slop design direction (UI path)"),
     ("pr-review-toolkit", "claude-plugins-official",  "G3 silent-failure and type-design reviewers"),
-    ("session-report",    "claude-plugins-official",  "cost accounting for multi-session runs"),
 ]
 
 # playwright is deliberately absent: Foreman bundles its own .mcp.json so it can
@@ -58,6 +58,17 @@ MCP_SERVERS = [
 ]
 
 BINARIES = [("git", None), ("claude", None), ("python3", None), ("node", (22, 18))]
+GROK_BINARIES = [("git", None), ("grok", None), ("python3", None), ("node", (22, 18))]
+
+# Grok installs from git sources, not name@marketplace. Same upstreams.
+GROK_MARKETPLACES = MARKETPLACES
+GROK_PLUGINS = [
+    ("impeccable",        "anthropics/claude-plugins-community", "G5 UI design audit (used when --has-ui is ui)"),
+    ("ui-ux-pro-max",     "nextlevelbuilder/ui-ux-pro-max-skill", "G5 design-system lookup (used when --has-ui is ui)"),
+    ("mattpocock-skills", "mattpocock/skills",                    "G0 grilling, G1 ticket shape, handover rules, TDD"),
+    ("frontend-design",   "anthropics/claude-plugins-official",   "preventative anti-slop design direction (UI path)"),
+    ("pr-review-toolkit", "anthropics/claude-plugins-official",   "G3 silent-failure and type-design reviewers"),
+]
 
 
 def node_version() -> tuple[int, int] | None:
@@ -68,9 +79,9 @@ def node_version() -> tuple[int, int] | None:
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def probe_binaries() -> list[dict]:
+def probe_binaries(binaries: list | None = None) -> list[dict]:
     rows = []
-    for name, minver in BINARIES:
+    for name, minver in (binaries or BINARIES):
         if not shutil.which(name):
             rows.append({"kind": "binary", "name": name, "status": MISSING,
                          "note": "not on PATH — install it manually"})
@@ -128,7 +139,176 @@ def ensure_settings_timeout(dry: bool) -> dict:
             "note": f"set to 5m (was {current or 'unset'})"}
 
 
-def preflight(dry: bool) -> list[dict]:
+def grok_installed_plugins() -> set[str]:
+    rc, out, _ = run(["grok", "plugin", "list", "--json"], timeout=90)
+    if rc == 0 and out.strip().startswith(("[", "{")):
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            data = []
+        names = set()
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    n = item.get("name") or item.get("id") or ""
+                    names.add(str(n).split("/")[-1].split("@")[0])
+                elif isinstance(item, str):
+                    names.add(item.split("@")[0])
+        elif isinstance(data, dict):
+            for item in data.get("plugins") or data.get("installed") or []:
+                if isinstance(item, dict):
+                    names.add(str(item.get("name") or "").split("/")[-1])
+        return {n for n in names if n}
+    return set()
+
+
+def grok_known_marketplaces() -> set[str]:
+    rc, out, _ = run(["grok", "plugin", "marketplace", "list", "--json"], timeout=90)
+    if rc == 0 and out.strip().startswith(("[", "{")):
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            data = []
+        names = set()
+        items = data if isinstance(data, list) else (data.get("sources") or data.get("marketplaces") or [])
+        for item in items:
+            if isinstance(item, dict):
+                names.add(str(item.get("name") or ""))
+            elif isinstance(item, str):
+                names.add(item)
+        return {n for n in names if n}
+    return set()
+
+
+def grok_connected_mcp() -> set[str]:
+    rc, out, _ = run(["grok", "mcp", "list", "--json"], timeout=120)
+    if rc == 0 and out.strip().startswith(("[", "{")):
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            data = []
+        names = set()
+        items = data if isinstance(data, list) else (data.get("servers") or [])
+        for item in items:
+            if isinstance(item, dict):
+                names.add(str(item.get("name") or ""))
+        return {n for n in names if n}
+    rc, out, _ = run(["grok", "mcp", "list"], timeout=120)
+    if rc != 0:
+        return set()
+    return {m.group(1).strip() for m in re.finditer(r"^([A-Za-z0-9._-]+)\b", out, re.M)}
+
+
+def ensure_grok_question_timeout(dry: bool) -> dict:
+    """Match Claude's 5-minute auto-select: [toolset.ask_user_question] timeout_secs = 300."""
+    path = Path.home() / ".grok" / "config.toml"
+    name = "ask_user_question.timeout_secs"
+    text = path.read_text(errors="replace") if path.exists() else ""
+    has_section = bool(re.search(r"^\[toolset\.ask_user_question\]", text, re.M))
+    has_300 = has_section and bool(re.search(
+        r"^\[toolset\.ask_user_question\][^\[]*timeout_secs\s*=\s*300\b", text, re.M | re.S
+    ))
+    if has_300:
+        return {"kind": "setting", "name": name, "status": OK, "note": "already 300s"}
+    if dry:
+        return {"kind": "setting", "name": name, "status": MISSING,
+                "note": "would set [toolset.ask_user_question] timeout_secs = 300"}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if has_section:
+        def repl_timeout(m: re.Match) -> str:
+            body = m.group(0)
+            if re.search(r"timeout_secs\s*=", body):
+                body = re.sub(r"timeout_secs\s*=\s*\d+", "timeout_secs = 300", body, count=1)
+            else:
+                body = body.rstrip() + "\ntimeout_secs = 300\n"
+            return body
+        text = re.sub(
+            r"^\[toolset\.ask_user_question\][^\[]*",
+            repl_timeout,
+            text,
+            count=1,
+            flags=re.M | re.S,
+        )
+        path.write_text(text)
+    else:
+        block = (
+            "\n# --- foreman ---\n"
+            "[toolset.ask_user_question]\n"
+            "timeout_enabled = true\n"
+            "timeout_secs = 300\n"
+        )
+        with path.open("a") as fh:
+            if text and not text.endswith("\n"):
+                fh.write("\n")
+            fh.write(block)
+    return {"kind": "setting", "name": name, "status": OK, "note": "set to 300s (5m auto-select)"}
+
+
+def preflight_grok(dry: bool) -> list[dict]:
+    rows = probe_binaries(GROK_BINARIES)
+
+    have_mp = grok_known_marketplaces()
+    have_pl = grok_installed_plugins()
+    for mp_name, source in GROK_MARKETPLACES.items():
+        if mp_name in have_mp or source in have_mp:
+            rows.append({"kind": "marketplace", "name": mp_name, "status": OK,
+                         "note": f"from {source}"})
+            continue
+        if dry:
+            rows.append({"kind": "marketplace", "name": mp_name, "status": MISSING,
+                         "note": f"would add from {source}"})
+            continue
+        rc, _, err = run(["grok", "plugin", "marketplace", "add", source], timeout=180)
+        rows.append({"kind": "marketplace", "name": mp_name,
+                     "status": OK if rc == 0 else FAILED,
+                     "note": f"added from {source}" if rc == 0 else err.strip()[:160]})
+
+    for name, source, purpose in GROK_PLUGINS:
+        short = name.split("@")[0]
+        if short in have_pl or name in have_pl:
+            rows.append({"kind": "plugin", "name": name, "status": OK, "note": purpose})
+            continue
+        if dry:
+            rows.append({"kind": "plugin", "name": name, "status": MISSING,
+                         "note": f"would install {source} — {purpose}"})
+            continue
+        rc, _, err = run(["grok", "plugin", "install", source, "--trust"], timeout=300)
+        if rc != 0:
+            rc, _, err = run(["grok", "plugin", "install", name, "--trust"], timeout=300)
+        if rc == 0:
+            run(["grok", "plugin", "enable", name], timeout=60)
+        rows.append({"kind": "plugin", "name": name,
+                     "status": OK if rc == 0 else FAILED,
+                     "note": purpose if rc == 0 else err.strip()[:160]})
+
+    live = grok_connected_mcp()
+    for name, add_cmd, purpose in MCP_SERVERS:
+        if name in live:
+            rows.append({"kind": "mcp", "name": name, "status": OK, "note": purpose})
+        elif add_cmd is None:
+            rows.append({"kind": "mcp", "name": name, "status": OK,
+                         "note": f"{purpose} (bundled by foreman/.mcp.json)"})
+        elif dry:
+            rows.append({"kind": "mcp", "name": name, "status": MISSING,
+                         "note": f"would add: grok mcp add {name} -- {' '.join(add_cmd)}"})
+        else:
+            rc, _, err = run(["grok", "mcp", "add", name, "--"] + add_cmd, timeout=180)
+            rows.append({"kind": "mcp", "name": name,
+                         "status": OK if rc == 0 else FAILED,
+                         "note": purpose if rc == 0 else err.strip()[:160]})
+
+    rows.append(ensure_grok_question_timeout(dry))
+    return rows
+
+
+def preflight(dry: bool, harness: str | None = None) -> list[dict]:
+    h = harness or detect_harness(Path(".foreman") if Path(".foreman").is_dir() else None)
+    if Path(".foreman/work").is_dir():
+        stamp_harness(Path(".foreman"), h)
+    header = [{"kind": "harness", "name": h, "status": OK,
+               "note": "FOREMAN_HARNESS or auto-detect; stamp at .foreman/work/harness"}]
+    if h == "grok":
+        return header + preflight_grok(dry)
     rows = probe_binaries()
 
     have_mp = known_marketplaces()
@@ -177,7 +357,7 @@ def preflight(dry: bool) -> list[dict]:
                          "note": purpose if rc == 0 else err.strip()[:160]})
 
     rows.append(ensure_settings_timeout(dry))
-    return rows
+    return header + rows
 
 
 def report(rows: list[dict], dry: bool) -> int:
@@ -208,13 +388,15 @@ if __name__ == "__main__":
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--quiet", action="store_true", help="only print when something is wrong")
+    ap.add_argument("--harness", choices=("claude", "grok"),
+                    help="force worker runtime (default: auto-detect)")
     a = ap.parse_args()
 
     try:
-        rows = preflight(a.dry_run)
+        rows = preflight(a.dry_run, harness=a.harness)
     except Exception as exc:  # noqa: BLE001
         print(f"[foreman] preflight error: {exc}", file=sys.stderr)
-        sys.exit(0)  # never take a session down
+        sys.exit(1)
 
     if a.json:
         print(json.dumps(rows, indent=2))

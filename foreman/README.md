@@ -1,8 +1,9 @@
 # foreman
 
-A Claude Code plugin that drives a requirement through a full SDLC — grill, plan,
+A plugin that drives a requirement through a full SDLC — grill, plan,
 critique, build, test, beta-review, hand off — by spawning and supervising independent
-Claude sessions with budgets, deadlines, stuck-detection and handover compaction.
+worker sessions with budgets, deadlines, stuck-detection and handover compaction.
+Claude and Grok adapters live under `scripts/adapters/`.
 
 ```
 /foreman add a health-check endpoint
@@ -11,14 +12,17 @@ Claude sessions with budgets, deadlines, stuck-detection and handover compaction
 ## Install
 
 ```bash
+# Claude Code
 claude plugin marketplace add ~/projects/claude-tooling/foreman
 claude plugin install foreman@claude-tooling --scope user
+
+# Grok Build
+grok plugin install ~/projects/claude-tooling/foreman --trust
 ```
 
-The first `/foreman` run installs its own dependencies (`impeccable`, `ui-ux-pro-max`,
-`mattpocock-skills`, `skill-creator`, `pr-review-toolkit`, `session-report`,
-`frontend-design`), adds the marketplaces they live in, and sets
-`askUserQuestionTimeout: "5m"` — then reports exactly what it changed.
+The first `/foreman` run installs remaining dependencies and reports what it changed.
+On Claude it sets `askUserQuestionTimeout: "5m"`; on Grok, `[toolset.ask_user_question] timeout_secs = 300`.
+Workers: Claude `claude -p`, Grok `grok --prompt-file`. See [reference/harness.md](reference/harness.md).
 
 ## The gates
 
@@ -26,7 +30,7 @@ The first `/foreman` run installs its own dependencies (`impeccable`, `ui-ux-pro
 |---|---|---|
 | G0 | Intake — grill until nothing is assumed | main session + `/grilling` |
 | G1 | Plan — modules, tasks, dependencies, `[P]` markers | main session |
-| G2 | Critique — adversarial review in isolation | forked `foreman-critic` |
+| G2 | Critique — isolated attack, then manager disposition; `--g2-clear` | forked skill (Claude) or `foreman-critic` worker (Grok) |
 | G3 | Develop — one task per session, own worktree | `foreman-developer` |
 | G4 | Test — cases written first, then executed | `foreman-tester` |
 | G5 | Beta — real-user perspective, no build context | `foreman-beta-tester` |
@@ -36,10 +40,15 @@ No gate is skipped to save time. A small change gets a thin version of each.
 
 ## How workers run
 
-Workers are `claude -p` processes, not `--bg` sessions — `--max-budget-usd`,
-`--max-turns` and `--output-format` are print-mode only, and `--bg` refuses to combine
-with `-p`. Each gets its own git worktree and runs `bypassPermissions` inside it, so it
-never stalls on a prompt and cannot damage the main checkout.
+`scripts/spawn.sh` dispatches to a harness adapter ([reference/harness.md](reference/harness.md)):
+
+- **Claude:** `claude -p` with `stream-json`. `--bg` refuses to combine with `-p`.
+- **Grok:** `grok --prompt-file` with `streaming-messages-json`. No `--max-budget-usd`;
+  the supervisor emits `BUDGET` from captured spend. Headless Grok does not honour
+  `--worktree`, so the adapter creates `.grok/worktrees/` itself.
+
+Each worker gets its own git worktree and runs with permissions bypassed, so it never
+stalls on a prompt and cannot damage the main checkout.
 
 `supervise.py` reads the captured `stream-json` — the supported interface — and emits one
 event per state change:
@@ -52,15 +61,15 @@ event per state change:
 | `COMPACT` | informational — it self-compacted at 55% |
 | `TURNS` | 80% of the turn cap used — narrow scope or prepare a successor |
 | `BUDGET` | cap reached; successor or descope |
-| `DONE` | verify the acceptance boxes, then `integrate.sh` to merge the branch back |
+| `DONE` | verify the acceptance boxes and `[t]` (not `[x]`), then G4, then `integrate.sh` |
 | `FAILED` | fix the brief, then respawn |
 
 Compaction fires at 55% via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. A `PreCompact` hook writes
 a handover document; a `SessionStart(compact)` hook injects it into the fresh context.
 
-A `Stop` hook refuses to let a worker finish while its acceptance boxes are unchecked or
-its Activity log carries no real verify output — up to three times, then it defers to the
-manager.
+A `Stop` hook refuses to let a worker finish while its acceptance boxes are unchecked,
+its Activity log is empty, the brief has no `**Task file**`, or a developer has marked
+`[x]` before G4 — up to three times, then it defers to the manager.
 
 ## What it writes
 
@@ -71,7 +80,7 @@ manager.
 ├── board.md                      Obsidian drag-and-drop board
 ├── REQUIREMENTS.md               grilled requirement, EARS acceptance criteria
 ├── constitution.md               non-negotiables + run/build/test commands
-├── CRITIQUE.md                   the review the plan survived
+├── CRITIQUE.md                   G2 findings; gate is `--g2-clear`, not file presence
 ├── modules/M*/tasks/T-*.md       one file per task — the source of truth
 ├── decisions/D*.md               HITL ledger, including auto-selected calls
 ├── adr/NNNN-*.md                 architectural decisions
@@ -119,10 +128,12 @@ parallelises far worse than research does — both are why the ceiling is low.
 
 ## Reference
 
-- [reference/gates.md](reference/gates.md) — entry and exit criteria per gate
+- [reference/gates.md](reference/gates.md) — entry and exit criteria per gate, severity
+- [reference/critique-format.md](reference/critique-format.md) — CRITIQUE.md schema
 - [reference/task-format.md](reference/task-format.md) — task file schema, status legend
 - [reference/delegation-brief.md](reference/delegation-brief.md) — the four mandatory fields
 - [reference/troubleshooting.md](reference/troubleshooting.md) — known traps and rejected dependencies
+- [reference/harness.md](reference/harness.md) — Claude vs Grok worker adapters
 
 ## Developing
 

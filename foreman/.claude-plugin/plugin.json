@@ -27,15 +27,7 @@
       "marketplace": "mattpocock"
     },
     {
-      "name": "skill-creator",
-      "marketplace": "claude-plugins-official"
-    },
-    {
       "name": "pr-review-toolkit",
-      "marketplace": "claude-plugins-official"
-    },
-    {
-      "name": "session-report",
       "marketplace": "claude-plugins-official"
     },
     {

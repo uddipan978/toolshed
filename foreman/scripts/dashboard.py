@@ -17,7 +17,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from foreman_lib import all_sessions, all_tasks, sessions_dir, work_dir  # noqa: E402
+from foreman_lib import (  # noqa: E402
+    all_sessions, all_tasks, critique_is_clear, parse_critique,
+    sessions_dir, work_dir,
+)
 from board import LANES  # noqa: E402
 
 GATES = [("G0", "Intake"), ("G1", "Plan"), ("G2", "Critique"), ("G3", "Develop"),
@@ -227,9 +230,10 @@ def compute(root: Path):
     if reqs.exists() and reqs.read_text(errors="replace").strip() and \
             "[NEEDS CLARIFICATION]" not in reqs.read_text(errors="replace"):
         reached = 1
+    g2_clear = critique_is_clear(parse_critique(root / "CRITIQUE.md"))
     if tasks and reached >= 1:
         reached = 2
-        if (root / "CRITIQUE.md").exists():
+        if g2_clear:
             reached = 3 + min(min(rank[t["status"]] for t in tasks), 3)
             if total and len(done) == total:
                 reached = 6
@@ -246,8 +250,8 @@ def compute(root: Path):
              float(s.get("cost_usd") or 0) <= 0.5 * float(s.get("budget_usd") or 1)
              for s in sessions if s.get("state") == "done")
          and any(s.get("state") == "done" for s in sessions)),
-        ("🛡️", "Critiqued", "the plan survived an adversarial review",
-         (root / "CRITIQUE.md").exists()),
+        ("🛡️", "Critiqued", "every G2 finding fixed or refuted",
+         g2_clear),
         ("🚢", "Shipped", "all gates cleared, handed to the human",
          reached >= 6),
     ]

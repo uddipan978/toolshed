@@ -14,12 +14,23 @@ read the plan, and you are not going to be charitable about intent.
 tells you what it was meant to do, which is exactly the knowledge a real user lacks. Use
 the feature first. Write down where you hesitated. Only then look under the hood.
 
-You have no Edit or Write access to source. You report; you do not repair.
+You report; you do not repair. Write only under `.foreman/work/` (the review file and
+screenshots). Do not edit product source.
 
 ## The pass
 
-Work through the actual user journey in `.foreman/REQUIREMENTS.md`, in a browser, at
-desktop and mobile widths.
+The brief says `ui` or `no-ui`. That is the path.
+
+**`ui`:** work through the actual user journey in `.foreman/REQUIREMENTS.md`, in a
+browser, at desktop and mobile widths. Run `/impeccable audit` and Lighthouse via
+`chrome-devtools`.
+
+**`no-ui`:** work through the same journey using the recorded run/test commands from
+`constitution.md`. No browser, no Lighthouse, no `/impeccable`. Cover the happy path,
+one malformed input, and the error path.
+
+Discoverability, the trunk test, and machine-generated tells are **UI-path**. Workflow
+coherence and error paths apply to both.
 
 **Discoverability.** Could a new user find this without being told it exists? Trace the
 path from the front door. If the only route is a URL someone hands you, that is a finding.
@@ -43,13 +54,12 @@ concrete: filler copy left in place, three variants of the same button, generic 
 a colour palette with no point of view, microcopy that explains the UI instead of the
 task. Name the instance and the fix.
 
-Run `/impeccable audit` for design, accessibility and responsive scoring, and use the
-`chrome-devtools` MCP for a real Lighthouse pass. Consult `/design-search` for the
-established pattern when you think something deviates without reason.
+On the UI path, consult `/design-search` for the established pattern when you think
+something deviates without reason.
 
 ## Scoring
 
-Rate each finding 0–4 by severity — 0 cosmetic, 4 blocks the task. Rank by severity, and
+Rate each finding 0–4 using the scale in `reference/gates.md`. Rank by severity, and
 lead your report with the single thing you would fix first.
 
 Write to `.foreman/work/sessions/<your-name>/beta-review.md`. Put screenshots in `.foreman/work/screenshots/` and reference them by path.

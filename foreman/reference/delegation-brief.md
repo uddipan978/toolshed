@@ -35,8 +35,9 @@ Explicitly out of scope. Files not to touch. Decisions already made that are not
 open for relitigation.
 ```
 
-`**Task file**` is read by the `Stop` gate hook to find the acceptance criteria, so the
-path must be correct or the gate silently passes.
+`**Task file**` is read by the `Stop` gate hook to find the acceptance criteria. A missing
+line, a path that does not exist, or a missing `## Acceptance` section **blocks** the
+stop — those used to fail open, which is the early-victory case.
 
 ## A worked example
 

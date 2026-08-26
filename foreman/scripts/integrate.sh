@@ -26,8 +26,25 @@ done
 
 ROOT="$(cd "$(dirname "$ROOT")" && pwd)/$(basename "$ROOT")"
 PROJECT="$(dirname "$ROOT")"
-BRANCH="foreman/$NAME"
-WT="$PROJECT/.claude/worktrees/foreman-$NAME"
+STATUS="$ROOT/work/sessions/$NAME/status.json"
+status_field() {
+  python3 -c 'import json,sys
+p,k=sys.argv[1],sys.argv[2]
+try:
+    print(json.load(open(p)).get(k) or "")
+except Exception:
+    print("")' "$STATUS" "$1"
+}
+BRANCH="$(status_field branch)"
+CWD="$(status_field cwd)"
+[[ -n "$BRANCH" ]] || BRANCH="foreman/$NAME"
+if [[ -n "$CWD" && -d "$CWD" && "$CWD" != "$PROJECT" ]]; then
+  WT="$CWD"
+elif [[ -d "$PROJECT/.claude/worktrees/foreman-$NAME" ]]; then
+  WT="$PROJECT/.claude/worktrees/foreman-$NAME"
+else
+  WT="$PROJECT/.grok/worktrees/foreman-$NAME"
+fi
 
 cd "$PROJECT"
 git rev-parse --git-dir >/dev/null 2>&1 || { echo "integrate.sh: not a git repo" >&2; exit 2; }
@@ -40,17 +57,29 @@ git show-ref --verify --quiet "refs/heads/$BRANCH" || {
 # A worker may have left changes uncommitted in its worktree; commit them so the
 # merge carries everything it produced rather than silently dropping it.
 if [[ -d "$WT" ]] && [[ -n "$(git -C "$WT" status --porcelain)" ]]; then
-  echo "integrate.sh: committing uncommitted work left in $NAME's worktree"
+  echo "integrate.sh: uncommitted work in $NAME's worktree:"
+  git -C "$WT" status --short
   git -C "$WT" add -A
-  git -C "$WT" commit -q -m "foreman($NAME): work in progress at integration" || true
+  if [[ -n "$(git -C "$WT" diff --cached --name-only)" ]]; then
+    git -C "$WT" commit -m "foreman($NAME): work in progress at integration" || {
+      echo "integrate.sh: failed to commit worktree changes — refusing to drop them" >&2
+      exit 1
+    }
+  fi
 fi
 
-# Foreman's own bookkeeping is always uncommitted at this point — the scaffold, the
-# board, the task file the manager just touched. That must not block a code merge, and
-# the worker branch carries its own version of those files, so commit ours first.
+# Foreman's own bookkeeping is often uncommitted — the board, the task file the
+# manager just touched. That must not block a code merge. Commit it on BASE and
+# fail out loud if the commit fails; `|| true` used to continue into a merge
+# with a dirty tree.
 if [[ -n "$(git status --porcelain -- .foreman .gitignore)" ]]; then
+  echo "integrate.sh: committing .foreman bookkeeping on $BASE:"
+  git status --short -- .foreman .gitignore
   git add -A -- .foreman .gitignore
-  git commit -q -m "foreman: bookkeeping before integrating $NAME" || true
+  git commit -m "foreman: bookkeeping before integrating $NAME" || {
+    echo "integrate.sh: failed to commit bookkeeping; refusing to merge over a dirty .foreman" >&2
+    exit 1
+  }
 fi
 
 # Anything dirty OUTSIDE .foreman/ is the user's own work. Never merge over it.

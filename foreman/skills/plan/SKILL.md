@@ -57,15 +57,20 @@ Write **Out of scope** on every task. It is what stops a worker quietly expandin
 
 ## Exit criteria
 
+G1 exit is in [reference/gates.md](../../reference/gates.md). In short:
+
 - [ ] Every requirement in `REQUIREMENTS.md` traces to at least one task
 - [ ] Every task traces back to a requirement section (`**Traces to**`)
 - [ ] Every task has a runnable Verify command and checkable acceptance boxes
 - [ ] Dependency order holds — no task needs output from a later one
 - [ ] `[P]` markers name genuinely disjoint file sets
 
-Regenerate the views, then go to G2:
+Regenerate the views, append to `.foreman/log.md`, and **return to `/foreman`**,
+which routes to G2. Do not critique in this session — the planner attacking its
+own plan is how G2 isolation dies.
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/board.py --root .foreman
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/dashboard.py --root .foreman
+PLUGIN_ROOT="${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+python3 "$PLUGIN_ROOT/scripts/board.py" --root .foreman
+python3 "$PLUGIN_ROOT/scripts/dashboard.py" --root .foreman
 ```

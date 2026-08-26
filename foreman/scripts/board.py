@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from foreman_lib import all_sessions, all_tasks  # noqa: E402
+from foreman_lib import all_sessions, all_tasks, parse_critique, critique_is_clear  # noqa: E402
 
 LANES = [
     ("backlog", "Backlog"),
@@ -116,13 +116,28 @@ def render_status(root: Path) -> str:
 
     blocked = [t for t in tasks if t["status"] == "blocked"]
     waiting = [t for t in tasks if t["status"] == "awaiting_human"]
-    if blocked or waiting:
-        out += ["## Needs attention", "", "| | Task | Why |", "|---|---|---|"]
+    crit = parse_critique(root / "CRITIQUE.md")
+    g2_rows: list[tuple[str, str]] = []
+    if crit["exists"] and not critique_is_clear(crit):
+        for f in crit["findings"]:
+            if f.get("status") == "open":
+                g2_rows.append((f"{f['id']} {f.get('title', '')}".strip(),
+                                "G2 finding open"))
+        if crit.get("re_critique") == "pending":
+            g2_rows.append(("G2 re-critique", "pending — re-invoke `/foreman:critique`"))
+        if not g2_rows:
+            why = (crit["problems"][0] if crit.get("problems")
+                   else "not G2-clear")
+            g2_rows.append(("CRITIQUE.md", why))
+    if blocked or waiting or g2_rows:
+        out += ["## Needs attention", "", "| | Item | Why |", "|---|---|---|"]
         for t in blocked:
             out.append(f"| 🔴 | {link(t, root)} | blocked |")
         for t in waiting:
             why = "needs clarification" if t["needs_clarification"] else "awaiting a decision"
             out.append(f"| 🟠 | {link(t, root)} | {why} |")
+        for item, why in g2_rows:
+            out.append(f"| 🟠 | {item} | {why} |")
         out.append("")
     else:
         out += ["Nothing is blocked or waiting on a person.", ""]

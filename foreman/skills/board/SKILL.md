@@ -1,15 +1,16 @@
 ---
 name: board
 description: Regenerates the Foreman Kanban board and HTML dashboard from task files and reports current status. Use when the user asks for Foreman status, progress, the board, or the dashboard, or after any batch of task status changes.
-allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/*)
+allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(python3 ${GROK_PLUGIN_ROOT}/scripts/*)
 ---
 
 # Board and dashboard
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/board.py --root .foreman
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/dashboard.py --root .foreman --static
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/dashboard.py --root .foreman
+PLUGIN_ROOT="${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+python3 "$PLUGIN_ROOT/scripts/board.py" --root .foreman
+python3 "$PLUGIN_ROOT/scripts/dashboard.py" --root .foreman --static
+python3 "$PLUGIN_ROOT/scripts/dashboard.py" --root .foreman
 ```
 
 Run all three. They are the same data for three different audiences:

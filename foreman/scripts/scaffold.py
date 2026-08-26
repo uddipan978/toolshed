@@ -12,6 +12,9 @@ import argparse
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from foreman_lib import stamp_harness  # noqa: E402
+
 CONSTITUTION = """# Project constitution
 
 Non-negotiables for this project. Foreman reads this at every gate; a worker that
@@ -239,6 +242,25 @@ repo deviates from that.
 |---|---|---|---|
 """
 
+CRITIQUE_TEMPLATE = """# Critique
+
+**Verdict** not-fit
+**Re-critique** not-required
+**Date**
+
+## F-01 — title
+**Severity** 3
+**Attack** decomposition
+**Evidence**
+**Change**
+**Status** open
+**Disposition**
+
+## Attacks that did not land
+
+-
+"""
+
 ADR_TEMPLATE = """# ADR {num} — {title}
 
 **Date** {date} · **Status** proposed | accepted | superseded by ADR-{num}
@@ -280,7 +302,7 @@ What the team reads. Stable, reviewable, meaningful in a diff.
 | `board.md` | Obsidian Kanban view — drag-and-drop |
 | `REQUIREMENTS.md` | the grilled requirement, EARS acceptance criteria |
 | `constitution.md` | project non-negotiables and the run/build/test commands |
-| `CRITIQUE.md` | the adversarial review the plan survived |
+| `CRITIQUE.md` | G2 findings; the gate is `--g2-clear`, not file presence |
 | `modules/M*/MODULE.md` | one file per module |
 | `modules/M*/tasks/T-*.md` | one file per task — **the source of truth** |
 | `decisions/D*.md` | human-in-the-loop ledger, including auto-selected calls |
@@ -320,9 +342,10 @@ needs; the session directory is only how it got made.
 
 ## Worker worktrees
 
-They live outside this directory at `<project>/.claude/worktrees/` and are added to the
-project `.gitignore` by the scaffolder. `scripts/integrate.sh` merges a finished
-worker's branch back and removes its worktree.
+They live outside this directory at `<project>/.claude/worktrees/` (Claude) or
+`<project>/.grok/worktrees/` (Grok) and are added to the project `.gitignore` by
+the scaffolder. `scripts/integrate.sh` merges a finished worker's branch back and
+removes its worktree. The path is stored on the session `status.json`.
 
 ## Status legend
 
@@ -335,7 +358,8 @@ worker's branch back and removes its worktree.
 # worktrees inside the working tree, so without this they show up as untracked
 # and get swept into a commit.
 GIT_EXCLUDES = [
-    (".claude/worktrees/", "Foreman worker git worktrees — never commit these"),
+    (".claude/worktrees/", "Foreman worker git worktrees (Claude) — never commit these"),
+    (".grok/worktrees/", "Foreman worker git worktrees (Grok) — never commit these"),
 ]
 
 
@@ -374,6 +398,7 @@ def scaffold(project: Path, force: bool) -> list[str]:
         "templates/MODULE.md": MODULE_TEMPLATE,
         "templates/TASK.md": TASK_TEMPLATE,
         "templates/ADR.md": ADR_TEMPLATE,
+        "templates/CRITIQUE.md": CRITIQUE_TEMPLATE,
         "agents/glossary.md": GLOSSARY,
         "agents/code-standards.md": CODE_STANDARDS,
         "agents/domain.md": DOMAIN,
@@ -386,6 +411,7 @@ def scaffold(project: Path, force: bool) -> list[str]:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body)
         created.append(str(p.relative_to(project)))
+    stamp_harness(root)
     return created
 
 

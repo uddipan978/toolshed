@@ -47,19 +47,20 @@ touching them, that is a finding — report it, don't quietly expand your remit.
 
 ## Definition of done
 
-A task is done when **every acceptance box is checked and its Verify command has actually
+G3 is done when **every acceptance box is checked and its Verify command has actually
 run and passed**. Not when the code looks right. Not when you believe it works.
 
 Run the Verify command. Paste its real output into the task file's Activity log. If it
 fails, you are not done — fix it or report a blocker.
 
-Then update the task file: status `[x]`, acceptance boxes ticked, Activity log appended.
-Status lives in the file.
+Then update the task file: status `[t]`, acceptance boxes ticked, Activity log appended.
+**Never write `[x]`.** `[x]` is after independent test (G4), which is someone else's job.
+The Stop hook will reject a stop whose task is `[x]`. Status lives in the file.
 
 ## Reporting back
 
 Your final message to the manager states, in this order:
-1. Task ID and whether it passed.
+1. Task ID and whether G3 passed (status is `[t]`).
 2. The Verify command you ran and its result.
 3. Files changed, and the branch name.
 4. Anything you discovered that changes another task — dependencies, wrong assumptions,

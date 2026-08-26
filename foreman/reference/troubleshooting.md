@@ -33,9 +33,32 @@ tokens are excluded — this matches how Claude Code computes it for the status 
 **A worker that says its task file is missing is telling the truth.** A worktree is a
 fresh checkout of the branch, so anything uncommitted in the main tree is invisible
 inside it — and `.foreman/` is almost always uncommitted when a worker spawns. `spawn.sh`
-commits the tracked half of `.foreman/` before creating the worktree for exactly this
-reason. If you bypass `spawn.sh`, do that commit yourself or the worker gets a tree with
-no task file, no constitution and no glossary.
+writes a `commit-tree` snapshot of `.foreman/` and `.gitignore` **without moving the
+user's HEAD or index**, then points the new branch at that commit. If the snapshot
+fails, spawn exits non-zero — it does not continue on a tree with no task file. If you
+bypass `spawn.sh`, produce an equivalent snapshot yourself.
+
+**G2 is `--g2-clear`, not "CRITIQUE.md exists".** A file with open findings, a pending
+re-critique, or a thin "looks reasonable" body is not a passed gate. The router and
+the dashboard badge both call `verify_gate.py --g2-clear`.
+
+## Grok
+
+**`FOREMAN_HARNESS=grok`** (or a Grok TUI session: `GROK_SESSION_ID`) selects
+`scripts/adapters/grok/spawn.sh`. Claude remains the default. See
+[harness.md](harness.md).
+
+**Headless `grok -p` does not create a worktree from `--worktree`.** The Grok adapter
+creates `.grok/worktrees/foreman-<name>/` itself, same as the Claude adapter does for
+`.claude/worktrees/`.
+
+**Grok has no `--max-budget-usd`.** Spend is read from the stream; the supervisor emits
+`BUDGET` when it crosses the value stored in `status.json`. Stop the pid.
+
+**`POKE` cannot reach a Grok `-p` worker.** There is no `SendMessage` equivalent. Treat
+POKE as log-only; act on `STUCK`.
+
+**G2 is not a forked skill.** Spawn `--agent foreman-critic --worktree no`.
 
 **Worker working files must use absolute paths.** The worker's cwd is its worktree, so a
 relative `.foreman/work/sessions/<name>/progress.md` resolves inside the worktree — where

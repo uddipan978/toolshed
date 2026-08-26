@@ -138,6 +138,7 @@ something is failing and the cause is not obvious · `/foreman:board` to update 
   lives in the file, not in a commit message.
 - Do not mark an acceptance box checked until its Verify command has actually run
   and passed.
+- Developers set status to `[t]` when Verify passes. Never `[x]` — G4 has not run.
 - Keep `progress.md` in this session directory current — it is what the next
   handover is built from.
 """

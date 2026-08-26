@@ -17,8 +17,11 @@ CONTEXT_WINDOWS = {
     "opus-4": 200_000,
     "sonnet-4": 200_000,
     "haiku": 200_000,
+    "grok-4": 256_000,
+    "grok-build": 256_000,
 }
 DEFAULT_CONTEXT_WINDOW = 200_000
+HARNESSES = ("claude", "grok")
 
 STATUS_ORDER = ["backlog", "planned", "in_progress", "in_test", "beta", "awaiting_human", "done", "blocked"]
 
@@ -41,12 +44,56 @@ def context_window_for(model: str | None) -> int:
     if not model:
         return DEFAULT_CONTEXT_WINDOW
     m = model.lower()
-    if "[1m]" in m or m.endswith("-1m"):
+    if "[1m]" in m or m.endswith("-1m") or "2m" in m:
         return 1_000_000
     for key, size in CONTEXT_WINDOWS.items():
         if key.replace("[1m]", "") in m:
             return size
+    if m.startswith("grok"):
+        return 256_000
     return DEFAULT_CONTEXT_WINDOW
+
+
+def detect_harness(root: Path | None = None) -> str:
+    """Which worker runtime to use. Default is claude so existing installs
+    keep their spawn path. Grok wins when this session is clearly a Grok TUI
+    (`GROK_SESSION_ID`) or a stamp file says so. Override with FOREMAN_HARNESS.
+    """
+    explicit = (os.environ.get("FOREMAN_HARNESS") or "").strip().lower()
+    if explicit in HARNESSES:
+        return explicit
+    if root is not None:
+        stamp = Path(root) / "work" / "harness"
+        if stamp.is_file():
+            val = stamp.read_text(errors="replace").strip().lower()
+            if val in HARNESSES:
+                return val
+    if os.environ.get("GROK_SESSION_ID") or os.environ.get("GROK_AGENT"):
+        return "grok"
+    if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE"):
+        return "claude"
+    if os.environ.get("GROK_PLUGIN_ROOT"):
+        return "grok"
+    if os.environ.get("CLAUDE_PLUGIN_ROOT"):
+        return "claude"
+    return "claude"
+
+
+def stamp_harness(foreman_root: Path, harness: str | None = None) -> str:
+    """Write `.foreman/work/harness` so later spawn.sh calls agree."""
+    h = harness or detect_harness(foreman_root)
+    work = Path(foreman_root) / "work"
+    if work.is_dir():
+        (work / "harness").write_text(h + "\n")
+    return h
+
+
+def plugin_root() -> Path:
+    for key in ("FOREMAN_PLUGIN_ROOT", "GROK_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT"):
+        v = os.environ.get(key)
+        if v:
+            return Path(v)
+    return Path(__file__).resolve().parent.parent
 
 
 def read_stream(path: Path) -> dict:
@@ -94,7 +141,8 @@ def read_stream(path: Path) -> dict:
             usage = msg.get("usage") or {}
             if usage:
                 # Matches how Claude Code computes context usage for the status
-                # line: input side only, output tokens excluded.
+                # line: input side only, output tokens excluded. Grok's
+                # streaming-messages-json assistant frames use the same buckets.
                 out["context_tokens"] = (
                     usage.get("input_tokens", 0)
                     + usage.get("cache_creation_input_tokens", 0)
@@ -103,11 +151,26 @@ def read_stream(path: Path) -> dict:
                 out["turns"] += 1
             if msg.get("model"):
                 out["model"] = msg["model"]
-        elif etype == "result":
+        elif etype in ("result", "end"):
+            # Claude: type=result subtype=success|error_max_turns|error_max_budget_usd
+            # Grok streaming-messages-json: type=result subtype=success|error_max_turns
+            # Grok streaming-json: type=end stopReason=end_turn
             out["finished"] = True
-            out["result_subtype"] = ev.get("subtype")
+            sub = ev.get("subtype")
+            if not sub:
+                if ev.get("is_error"):
+                    sub = "error_during_execution"
+                else:
+                    sr = ev.get("stop_reason") or ev.get("stopReason") or "success"
+                    sub = "success" if sr in ("end_turn", "stop", "success", "done") else sr
+            out["result_subtype"] = sub
             if isinstance(ev.get("total_cost_usd"), (int, float)):
                 out["cost_usd"] = float(ev["total_cost_usd"])
+            nt = ev.get("num_turns")
+            if isinstance(nt, int) and nt > out["turns"]:
+                out["turns"] = nt
+            if ev.get("model"):
+                out["model"] = ev["model"]
 
     out["context_window"] = context_window_for(out["model"])
     if out["context_window"]:
@@ -248,6 +311,211 @@ def all_tasks(root: Path) -> list[dict]:
             except Exception:  # noqa: BLE001 - one bad file must not break the board
                 continue
     return sorted(tasks, key=lambda t: t["id"])
+
+
+# --- constitution -------------------------------------------------------------
+
+_NO_UI = frozenset({
+    "", "_not yet recorded_", "n/a", "none", "—", "-", "not applicable",
+    "tbd", "todo",
+})
+
+
+def constitution_app_url(root: Path) -> str | None:
+    """Value of the Commands table's app URL row, or None if missing."""
+    path = root / "constitution.md"
+    if not path.exists():
+        return None
+    for line in path.read_text(errors="replace").splitlines():
+        if not re.search(r"\|\s*app URL\s*\|", line, re.I):
+            continue
+        cells = [c.strip() for c in line.split("|")]
+        cells = [c for c in cells if c != ""]
+        if len(cells) >= 2:
+            return cells[1]
+    return None
+
+
+def has_ui(root: Path) -> bool:
+    """True when constitution.md records a real http(s) or localhost app URL."""
+    url = constitution_app_url(root)
+    if url is None:
+        return False
+    u = url.strip().lower()
+    if u in _NO_UI:
+        return False
+    return u.startswith(("http://", "https://", "localhost"))
+
+
+# --- CRITIQUE.md --------------------------------------------------------------
+# Schema: reference/critique-format.md. This parser is the mechanical twin.
+
+CRITIQUE_FIELD = re.compile(r"\*\*([A-Za-z0-9][A-Za-z0-9 _-]*)\*\*\s*(.*)$", re.M)
+CRITIQUE_FINDING = re.compile(r"^##\s+(F-\d+)\s*[—–-]\s*(.+)$", re.M)
+ATTACKS_HELD = re.compile(
+    r"^##\s+Attacks that did not land\s*$", re.M | re.I
+)
+VERDICT_VALUES = {"fit", "not-fit"}
+RECRITIQUE_VALUES = {"not-required", "pending", "done"}
+STATUS_VALUES = {"open", "fixed", "refuted"}
+ATTACK_VALUES = {
+    "traceability", "decomposition", "acceptance",
+    "missing-work", "over-engineering", "other",
+}
+
+
+def _norm_token(val: str) -> str:
+    return re.sub(r"\s+", "-", val.strip().lower()).strip("-")
+
+
+def _fields(block: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for m in CRITIQUE_FIELD.finditer(block):
+        out[m.group(1).strip().lower()] = m.group(2).strip()
+    return out
+
+
+def _section_nonempty(text: str) -> bool:
+    body = text.strip()
+    if not body:
+        return False
+    # Placeholder italics like "_none yet_" do not count.
+    stripped = re.sub(r"[_*`#\-]", "", body).strip().lower()
+    return stripped not in ("", "none", "n/a", "none yet")
+
+
+def _parse_severity(val: str) -> int | None:
+    m = re.search(r"[0-4]", val.strip())
+    return int(m.group(0)) if m else None
+
+
+def parse_critique(path: Path) -> dict:
+    """Parse `.foreman/CRITIQUE.md`. Missing or malformed files still return a
+    dict — `problems` lists every schema failure; `critique_is_clear` is the
+    G2 exit predicate the router and dashboard must use."""
+    result = {
+        "exists": False,
+        "path": path,
+        "verdict": None,
+        "re_critique": None,
+        "date": "",
+        "findings": [],
+        "attacks_held": "",
+        "problems": [],
+    }
+    if not path.exists():
+        result["problems"] = ["CRITIQUE.md is missing"]
+        return result
+
+    text = path.read_text(errors="replace")
+    result["exists"] = True
+
+    held_m = ATTACKS_HELD.search(text)
+    held_body = ""
+    body_for_findings = text
+    if held_m:
+        held_body = text[held_m.end():]
+        next_h = re.search(r"^##\s+", held_body, re.M)
+        if next_h:
+            held_body = held_body[:next_h.start()]
+        body_for_findings = text[:held_m.start()]
+        result["attacks_held"] = held_body.strip()
+
+    headings = list(CRITIQUE_FINDING.finditer(body_for_findings))
+    head = body_for_findings[:headings[0].start()] if headings else body_for_findings
+    meta = _fields(head)
+    verdict = _norm_token(meta.get("verdict", ""))
+    if verdict in ("notfit", "unfit"):
+        verdict = "not-fit"
+    recrit = _norm_token(meta.get("re-critique", meta.get("re critique", "")))
+    result["verdict"] = verdict if verdict in VERDICT_VALUES else None
+    result["re_critique"] = recrit if recrit in RECRITIQUE_VALUES else None
+    result["date"] = meta.get("date", "")
+
+    for i, m in enumerate(headings):
+        end = headings[i + 1].start() if i + 1 < len(headings) else len(body_for_findings)
+        block = body_for_findings[m.end():end]
+        f = _fields(block)
+        attack = _norm_token(f.get("attack", ""))
+        status_raw = _norm_token(f.get("status", ""))
+        result["findings"].append({
+            "id": m.group(1),
+            "title": m.group(2).strip(),
+            "severity": _parse_severity(f.get("severity", "")),
+            "attack": attack if attack in ATTACK_VALUES else (attack or None),
+            "evidence": f.get("evidence", "").strip(),
+            "change": f.get("change", "").strip(),
+            "status": status_raw if status_raw in STATUS_VALUES else None,
+            "disposition": f.get("disposition", "").strip(),
+        })
+
+    result["problems"] = _critique_schema_problems(result)
+    return result
+
+
+def _critique_schema_problems(d: dict) -> list[str]:
+    if not d["exists"]:
+        return ["CRITIQUE.md is missing"]
+    problems = []
+    if d["verdict"] not in VERDICT_VALUES:
+        problems.append("**Verdict** must be `fit` or `not-fit`")
+    if d["re_critique"] not in RECRITIQUE_VALUES:
+        problems.append(
+            "**Re-critique** must be `not-required`, `pending`, or `done`"
+        )
+    if d["verdict"] == "not-fit" and not d["findings"]:
+        problems.append("**Verdict** is `not-fit` but there are no findings")
+    if d["verdict"] == "fit" and not _section_nonempty(d["attacks_held"]):
+        problems.append(
+            "**Verdict** is `fit` but **Attacks that did not land** is empty"
+        )
+    if d["verdict"] is None and not d["findings"] and not _section_nonempty(d["attacks_held"]):
+        problems.append(
+            "CRITIQUE.md is too thin — a verdict, findings or attacks that did not land are required"
+        )
+    for f in d["findings"]:
+        prefix = f["id"]
+        if f["severity"] is None:
+            problems.append(f"{prefix}: **Severity** must be 0–4")
+        if f["attack"] not in ATTACK_VALUES:
+            problems.append(
+                f"{prefix}: **Attack** must be one of {', '.join(sorted(ATTACK_VALUES))}"
+            )
+        if not f["evidence"]:
+            problems.append(f"{prefix}: **Evidence** is empty")
+        if not f["change"]:
+            problems.append(f"{prefix}: **Change** is empty")
+        if f["status"] not in STATUS_VALUES:
+            problems.append(
+                f"{prefix}: **Status** must be `open`, `fixed`, or `refuted`"
+            )
+    return problems
+
+
+def critique_is_well_formed(d: dict) -> bool:
+    return bool(d.get("exists")) and not d.get("problems")
+
+
+def critique_is_clear(d: dict) -> bool:
+    """G2 exit: well-formed, no open findings, re-critique not pending."""
+    if not critique_is_well_formed(d):
+        return False
+    if d.get("re_critique") == "pending":
+        return False
+    return all(f.get("status") in ("fixed", "refuted") for f in d.get("findings", []))
+
+
+def critique_problems(root: Path, require_clear: bool = False) -> list[str]:
+    """Problems that `--check-critique` / `--g2-clear` report."""
+    d = parse_critique(root / "CRITIQUE.md")
+    problems = list(d["problems"])
+    if require_clear and critique_is_well_formed(d) and not critique_is_clear(d):
+        open_ids = [f["id"] for f in d["findings"] if f.get("status") == "open"]
+        if open_ids:
+            problems.append("open findings: " + ", ".join(open_ids))
+        if d.get("re_critique") == "pending":
+            problems.append("**Re-critique** is `pending` — re-invoke `/foreman:critique`")
+    return problems
 
 
 # --- layout ---------------------------------------------------------------
