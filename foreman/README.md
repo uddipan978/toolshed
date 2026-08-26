@@ -105,8 +105,11 @@ what is installed. After an edit, either:
 # session-only, no install: fastest loop for testing a change
 claude --plugin-dir ~/projects/claude-tooling/foreman
 
-# or reinstall (a version bump alone is not enough — uninstall first)
+# or reinstall. A version bump alone is not enough, and neither is uninstall alone —
+# the old versioned cache directory is reused, so clear it too.
 claude plugin uninstall foreman
+rm -rf ~/.claude/plugins/cache/claude-tooling
+claude plugin marketplace update claude-tooling
 claude plugin install foreman@claude-tooling --scope user -y
 ```
 
