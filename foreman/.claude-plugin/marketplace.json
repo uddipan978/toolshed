@@ -1,0 +1,20 @@
+{
+  "name": "claude-tooling",
+  "owner": {
+    "name": "Uddipan Dey"
+  },
+  "allowCrossMarketplaceDependenciesOn": [
+    "claude-community",
+    "ui-ux-pro-max-skill",
+    "mattpocock",
+    "claude-plugins-official"
+  ],
+  "plugins": [
+    {
+      "name": "foreman",
+      "source": "./",
+      "description": "Agentic SDLC orchestration: manager session spawns and supervises worker sessions through gated lifecycle phases."
+    }
+  ],
+  "description": "Uddipan Dey's Claude Code tooling \u2014 agentic SDLC orchestration and related plugins."
+}
