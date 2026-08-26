@@ -95,3 +95,24 @@ parallelises far worse than research does — both are why the ceiling is low.
 - [reference/task-format.md](reference/task-format.md) — task file schema, status legend
 - [reference/delegation-brief.md](reference/delegation-brief.md) — the four mandatory fields
 - [reference/troubleshooting.md](reference/troubleshooting.md) — known traps and rejected dependencies
+
+## Developing
+
+The plugin cache **copies** files at install time — editing this repo does not change
+what is installed. After an edit, either:
+
+```bash
+# session-only, no install: fastest loop for testing a change
+claude --plugin-dir ~/projects/claude-tooling/foreman
+
+# or reinstall (a version bump alone is not enough — uninstall first)
+claude plugin uninstall foreman
+claude plugin install foreman@claude-tooling --scope user -y
+```
+
+Check what is actually live:
+
+```bash
+diff -q "$(find ~/.claude/plugins/cache/claude-tooling -name dashboard.py | tail -1)" \
+        scripts/dashboard.py
+```
