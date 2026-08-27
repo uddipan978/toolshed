@@ -37,7 +37,7 @@ Used by G2 findings and G5 beta findings. One scale.
 ## G0 — Intake
 
 **Entry:** a requirement in any form, including one sentence.
-**Owner:** the main session, using `/grilling`.
+**Owner:** the main session, using the `mattpocock-skills:grilling` skill.
 
 **Exit:**
 - [ ] Zero clarification markers in `REQUIREMENTS.md`

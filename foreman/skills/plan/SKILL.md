@@ -20,6 +20,14 @@ and edge cases.
 The technical draft is a real draft — name the files, the functions, the tables, the
 endpoints. "Add authentication" is not a draft.
 
+## Glossary
+
+Before writing tasks, fill `.foreman/agents/glossary.md`. Invoke the
+`mattpocock-skills:domain-modeling` skill to pin the ubiquitous language — every worker
+reads this file and is told to use those words exactly, so a term you leave vague here
+becomes three names for the same thing across three worktrees. Reach for
+`mattpocock-skills:codebase-design` when a module's seams are the hard part.
+
 ## Tasks
 
 Under each module, `tasks/T-<NN>-<NN>-<slug>.md` from `.foreman/templates/TASK.md`.

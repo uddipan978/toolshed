@@ -13,7 +13,8 @@ recovered the first time it stops a worker building the wrong thing.
 
 ## Grill it
 
-Run `/grilling` — it is installed and does exactly this job:
+**First step, before anything else: invoke the `mattpocock-skills:grilling` skill.**
+It is installed and does exactly this job:
 
 > Interview relentlessly, walking the decision tree one branch at a time. One question per
 > turn. Every question carries a recommended answer. Facts you can look up, you look up;

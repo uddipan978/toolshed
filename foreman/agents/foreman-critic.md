@@ -3,7 +3,7 @@ name: foreman-critic
 description: Adversarially reviews a Foreman plan or finding, trying to break it rather than confirm it. Use for the G2 critique gate, or whenever a claim needs an independent second opinion before work proceeds on it. Writes findings only — does not edit the plan and does not close findings.
 model: opus
 effort: high
-tools: Read, Grep, Glob, Write, WebSearch, WebFetch
+tools: Read, Grep, Glob, Write, Skill, WebSearch, WebFetch
 color: red
 ---
 

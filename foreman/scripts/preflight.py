@@ -45,7 +45,7 @@ MARKETPLACES = {
 PLUGINS = [
     ("impeccable",        "claude-community",         "G5 UI design audit (used when --has-ui is ui)"),
     ("ui-ux-pro-max",     "ui-ux-pro-max-skill",      "G5 design-system lookup (used when --has-ui is ui)"),
-    ("mattpocock-skills", "mattpocock",               "G0 grilling, G1 ticket shape, handover rules, TDD"),
+    ("mattpocock-skills", "mattpocock",               "G0 grilling, G1 domain-modeling, G3 TDD and bug diagnosis"),
     ("frontend-design",   "claude-plugins-official",  "preventative anti-slop design direction (UI path)"),
     ("pr-review-toolkit", "claude-plugins-official",  "G3 silent-failure and type-design reviewers"),
 ]
@@ -65,7 +65,7 @@ GROK_MARKETPLACES = MARKETPLACES
 GROK_PLUGINS = [
     ("impeccable",        "anthropics/claude-plugins-community", "G5 UI design audit (used when --has-ui is ui)"),
     ("ui-ux-pro-max",     "nextlevelbuilder/ui-ux-pro-max-skill", "G5 design-system lookup (used when --has-ui is ui)"),
-    ("mattpocock-skills", "mattpocock/skills",                    "G0 grilling, G1 ticket shape, handover rules, TDD"),
+    ("mattpocock-skills", "mattpocock/skills",                    "G0 grilling, G1 domain-modeling, G3 TDD and bug diagnosis"),
     ("frontend-design",   "anthropics/claude-plugins-official",   "preventative anti-slop design direction (UI path)"),
     ("pr-review-toolkit", "anthropics/claude-plugins-official",   "G3 silent-failure and type-design reviewers"),
 ]

@@ -40,7 +40,9 @@ on. Never poll workers with "are you done?" — the supervisor is how you know.
 ## Brief, then spawn
 
 Write `.foreman/work/sessions/<name>/brief.md` carrying **all four fields**. A brief missing any
-of them produces duplicated work or silent gaps:
+of them produces duplicated work or silent gaps. A worked example of each field is in
+[reference/delegation-brief.md](../../reference/delegation-brief.md) — read it before writing
+your first brief of the run:
 
 ```markdown
 **Task file** .foreman/modules/M01-auth/tasks/T-01-02-session-cookie.md
@@ -53,6 +55,8 @@ of them produces duplicated work or silent gaps:
 
 ## Tools and sources
 <what to use; what is already established so it isn't re-derived>
+<name the skills for this task: `mattpocock-skills:tdd` for the red/green loop,
+`mattpocock-skills:diagnosing-bugs` when something fails for a non-obvious reason>
 
 ## Boundaries
 <explicitly out of scope; files not to touch>
