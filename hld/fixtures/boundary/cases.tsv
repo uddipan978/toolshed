@@ -1,0 +1,20 @@
+BUILD	Add a fetch call to the existing /api/users endpoint
+BUILD	Add a route into the existing settings page and a state slice for the filter
+BUILD	Build the three chip variants from tokens and wire them into the orders table
+STOP	Create a new endpoint POST /api/reports for the export button
+STOP	Add a schema change so orders carry a priority column
+STOP	Write the auth middleware for the admin area
+STOP	Stand up a new backend service for notifications
+STOP	Create an endpoint POST /api/reports
+STOP	Add an endpoint for the export button
+STOP	Create the database schema for reports
+STOP	Alter the schema to add a priority field
+STOP	Add a new column to the orders table for priority
+STOP	Alter the orders table to add a priority column
+STOP	Expose a graphql mutation for orders
+STOP	Create a new REST api for the export flow
+BUILD	Build the new table view for orders with sortable columns
+BUILD	Design the new service overview card
+BUILD	Add a new API-shaped copy block to the docs page
+BUILD	Build the sign-in form posting to the existing auth endpoint
+BUILD	Wire the page to the existing authorization header helper

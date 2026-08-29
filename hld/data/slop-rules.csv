@@ -1,0 +1,4 @@
+id,family,requires_contract,pattern_kind,pattern,severity,note,provenance,grade
+SR01,literal-color,yes,regex,"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(",3,"literal color where the contract has a token table; token-definition files exempt; var(--) lines exempt","admission rule: contract-parameterized only; generic tells belong to detect.mjs",heuristic
+SR02,primitive-clone,yes,definition,"(function|const|class) <PrimitiveName>",3,"re-implementation of a primitive the contract names, outside its declared source dirs","project contract (e.g. 'reuse the @repo/ui primitive' class of rules)",heuristic
+SR03,banned-pattern,yes,regex,<from contract.json banned_patterns>,per-pattern,"MUST-NOT lines from the design contract that the grill turned into greppable patterns","the repo's own design contract, parsed at H0",heuristic

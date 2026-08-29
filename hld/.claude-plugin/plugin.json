@@ -1,0 +1,18 @@
+{
+  "name": "hld",
+  "version": "0.1.0",
+  "description": "Human-Like Design: a gated UX/UI studio — grill once, research with a kill door, IA-derived wireframes, a locked direction, then build and prove at nine real viewport widths. Anti-slop by contract, provenance on every claim, installs nothing at runtime. Runs standalone (in-session drive) or defers to Foreman when one is present.",
+  "author": {
+    "name": "Uddipan Dey"
+  },
+  "license": "MIT",
+  "keywords": [
+    "ux",
+    "ui",
+    "design",
+    "wireframes",
+    "anti-slop",
+    "accessibility",
+    "human-like-thinking"
+  ]
+}

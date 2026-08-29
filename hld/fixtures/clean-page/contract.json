@@ -1,0 +1,10 @@
+{
+  "sources": ["docs/UI-DESIGN.md"],
+  "tokens": {"--primary": "#0e5f52", "--foreground": "#26241f"},
+  "token_files": ["tokens.css"],
+  "primitives": ["Button", "Dialog"],
+  "primitive_sources": ["ui/"],
+  "banned_patterns": [
+    {"pattern": "lorem ipsum", "note": "placeholder copy violates the contract's real-copy MUST", "severity": 2}
+  ]
+}

@@ -1,0 +1,4 @@
+id,size,expected_bands,expected_test_kinds,note,provenance,grade
+EC01,S,"mobile-m,tablet-m,desktop-s","walkthrough,negative","S bounds capture breadth to 3 bands; test kinds are never reduced",reference/hld-gates.md,heuristic
+EC02,M,"mobile-s,mobile-m,mobile-l,tablet-s,tablet-m,tablet-l,desktop-s,desktop-m,ultrawide","walkthrough,negative","M is the unattended default: all nine bands, light and dark",reference/hld-gates.md,heuristic
+EC03,L,"mobile-s,mobile-m,mobile-l,tablet-s,tablet-m,tablet-l,desktop-s,desktop-m,ultrawide","walkthrough,negative","L adds depth (more flows/states), never new test kinds; regression only if the client asked",reference/hld-gates.md,heuristic

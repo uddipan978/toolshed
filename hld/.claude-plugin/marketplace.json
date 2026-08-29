@@ -1,0 +1,14 @@
+{
+  "name": "hld",
+  "owner": {
+    "name": "Uddipan Dey"
+  },
+  "plugins": [
+    {
+      "name": "hld",
+      "source": "./",
+      "description": "Human-Like Design: gated UX/UI studio with a kill door, IA-derived wireframes, contract-based anti-slop and nine-viewport proof."
+    }
+  ],
+  "description": "Human-Like Design (HLD) — UX/UI studio plugin for Claude Code, Grok CLI and Codex CLI."
+}

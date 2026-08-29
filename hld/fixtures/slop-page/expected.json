@@ -1,0 +1,1 @@
+{"min_findings": 4, "must_include_rules": ["literal-color", "primitive-clone", "banned-pattern"]}
