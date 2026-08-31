@@ -28,6 +28,7 @@ from foreman_lib import (  # noqa: E402
     all_tasks,
     critique_is_clear,
     critique_round,
+    memory_problems,
     parse_critique,
 )
 
@@ -146,6 +147,8 @@ def render_status(root: Path) -> str:
             why = (crit["problems"][0] if crit.get("problems")
                    else "not G2-clear")
             g2_rows.append(("CRITIQUE.md", why))
+    for mem in memory_problems(root):
+        g2_rows.append(("memory.md", mem))
     if blocked or waiting or g2_rows:
         out += ["## Needs attention", "", "| | Item | Why |", "|---|---|---|"]
         for t in blocked:

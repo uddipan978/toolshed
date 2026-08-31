@@ -20,9 +20,12 @@ from foreman_lib import (  # noqa: E402
     detect_harness,
     finding_forces_recritique,
     has_ui,
+    infer_gate,
     load_g2_state,
     may_set_pending,
+    memory_problems,
     parse_critique,
+    parse_memory,
     parse_task,
     read_stream,
     should_spawn_critic,
@@ -473,6 +476,120 @@ class G2LoopTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 1)
         self.assertIn("round cap", proc.stderr)
+
+
+REQ_CLEAN = "Factory OS requirements. No open questions.\n"
+REQ_DIRTY = "Scope still [NEEDS CLARIFICATION] on tenancy.\n"
+
+
+def _memory(gate: str) -> str:
+    return (
+        f"# Working memory\n\n**Last updated** 2026-08-31\n**Gate** {gate}\n\n"
+        "## 0. Immediate attention\n\n| | Item | Where |\n"
+    )
+
+
+class MemoryTests(unittest.TestCase):
+    def _root(self, *, req=None, tasks=None, critique=None, memory=None) -> Path:
+        d = Path(tempfile.mkdtemp())
+        if req is not None:
+            (d / "REQUIREMENTS.md").write_text(req)
+        if tasks:
+            tdir = d / "modules" / "M01" / "tasks"
+            tdir.mkdir(parents=True)
+            for i, body in enumerate(tasks, 1):
+                (tdir / f"T-01-{i:02d}.md").write_text(body)
+        if critique is not None:
+            (d / "CRITIQUE.md").write_text(critique)
+        if memory is not None:
+            (d / "work").mkdir(parents=True, exist_ok=True)
+            (d / "work" / "memory.md").write_text(memory)
+        return d
+
+    def test_infer_g0_missing_requirements(self):
+        self.assertEqual(infer_gate(self._root()), "G0")
+
+    def test_infer_g0_clarification(self):
+        self.assertEqual(infer_gate(self._root(req=REQ_DIRTY)), "G0")
+
+    def test_infer_g1_clean_no_tasks(self):
+        self.assertEqual(infer_gate(self._root(req=REQ_CLEAN)), "G1")
+
+    def test_infer_g2_tasks_no_critique(self):
+        root = self._root(req=REQ_CLEAN, tasks=[TASK_DEV_T])
+        self.assertEqual(infer_gate(root), "G2")
+
+    def test_infer_g3_g2_clear_work_remaining(self):
+        root = self._root(
+            req=REQ_CLEAN, tasks=[TASK_DEV_T], critique=FIT_CRITIQUE,
+        )
+        self.assertEqual(infer_gate(root), "G3")
+
+    def test_infer_g6_all_done(self):
+        root = self._root(
+            req=REQ_CLEAN, tasks=[TASK_DEV_DONE], critique=FIT_CRITIQUE,
+        )
+        self.assertEqual(infer_gate(root), "G6")
+
+    def test_stale_g0_label_after_plan(self):
+        """The FactoryOS failure: memory still says G0 after task files exist."""
+        root = self._root(
+            req=REQ_CLEAN, tasks=[TASK_DEV_T], memory=_memory("G0"),
+        )
+        self.assertEqual(infer_gate(root), "G2")
+        probs = memory_problems(root)
+        self.assertTrue(any("G0" in p and "G2" in p for p in probs), probs)
+
+    def test_current_gate_is_ok(self):
+        root = self._root(
+            req=REQ_CLEAN, tasks=[TASK_DEV_T], critique=FIT_CRITIQUE,
+            memory=_memory("G3"),
+        )
+        self.assertEqual(memory_problems(root), [])
+
+    def test_g3_g5_alias(self):
+        root = self._root(
+            req=REQ_CLEAN, tasks=[TASK_DEV_T], critique=FIT_CRITIQUE,
+            memory=_memory("G3–G5"),
+        )
+        self.assertEqual(memory_problems(root), [])
+
+    def test_missing_file(self):
+        root = self._root(req=REQ_CLEAN)
+        probs = memory_problems(root)
+        self.assertTrue(any("missing" in p for p in probs), probs)
+
+    def test_none_placeholder_is_stale(self):
+        root = self._root(req=REQ_CLEAN, memory=_memory("_none_"))
+        d = parse_memory(root / "work" / "memory.md")
+        self.assertIsNone(d["gate"])
+        self.assertTrue(memory_problems(root))
+
+    def test_check_memory_cli(self):
+        import subprocess
+        root = self._root(
+            req=REQ_CLEAN, tasks=[TASK_DEV_T], memory=_memory("G0"),
+        )
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "verify_gate.py"),
+             "--check-memory", "--root", str(root)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("stale", proc.stderr)
+        self.assertIn("expected **Gate** G2", proc.stderr)
+
+        root2 = self._root(
+            req=REQ_CLEAN, tasks=[TASK_DEV_T], critique=FIT_CRITIQUE,
+            memory=_memory("G3"),
+        )
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "verify_gate.py"),
+             "--check-memory", "--root", str(root2)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("G3", proc.stdout)
 
 
 class HasUiTests(unittest.TestCase):

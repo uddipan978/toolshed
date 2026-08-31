@@ -129,11 +129,13 @@ MEMORY = """# Working memory
 
 > **Read this first.** The running state of the work.
 > `.foreman/work/` is gitignored, so nothing here ships — machine-local detail is
-> safe to record. Update this at the end of every unit of work.
+> safe to record. Update at every gate exit and before compact. **Gate** must
+> match `verify_gate.py --check-memory`.
 >
 > The team-facing view is `../STATUS.md` and `../board.md`. This file is for agents.
 
 **Last updated:** _never_
+**Gate** _none_
 **Branch:** _unknown_ · **uncommitted:** _unknown_
 
 ---
@@ -325,7 +327,7 @@ What the agents use. Churns constantly, machine-local, worthless to a reviewer.
 
 | Path | What it is |
 |---|---|
-| `work/memory.md` | **read this first** — running state, immediate attention |
+| `work/memory.md` | **read this first** — running state; **Gate** must match `--check-memory` |
 | `work/sessions/<name>/` | brief, progress, status, captured stream, handovers |
 | `work/research/` | investigation notes that feed tasks |
 | `work/screenshots/` | evidence from testers and beta review |

@@ -42,6 +42,17 @@ python3 "$PLUGIN_ROOT/scripts/scaffold.py" .
 *Immediate attention*, deal with it before starting new work — that table exists because
 someone already paid for the lesson.
 
+Then check it is not stale (a G0 label surviving through G2 is how a compact
+handover restarts finished work):
+
+```bash
+python3 "$PLUGIN_ROOT/scripts/verify_gate.py" --check-memory --root .foreman
+```
+
+Non-zero: rewrite `work/memory.md` — set **Gate** to the value on stderr, refresh
+*Immediate attention* with live traps only — and re-run until it exits 0. Do not
+route, spawn, or compact on a stale file.
+
 Then read `.foreman/` and decide where this run picks up. Do not restart a gate that already
 has its artefact. **G2 is not an artefact check for `CRITIQUE.md` — it is `--g2-clear`.**
 
@@ -126,7 +137,8 @@ and at least one `fixed` finding is severity 4, or severity 3 whose **Attack** i
 `over-engineering` / `other` you verify yourself — they do not buy another fork.
 
 Then `--g2-clear`. Non-zero: stay in G2 (G2b if `--g2-spawn` exits 1; G2a only if
-`--g2-spawn` exits 0). Zero: G3–G5.
+`--g2-spawn` exits 0). Zero: rewrite `work/memory.md` (**Gate** `G3`) and go to
+G3–G5.
 
 A `CRITIQUE.md` that exists with open findings is not a passed gate.
 
@@ -142,8 +154,12 @@ teammate reviewing the PR want this? Tasks, decisions and the glossary, yes. A s
 churning `status.json`, no. Machine-local state — branch, uncommitted work, half-formed
 theories — goes in `work/memory.md`, which never ships.
 
-**Keep `work/memory.md` current.** It is what a fresh session reads first, and its
-**Immediate attention** table is what stops the next agent walking into a known trap.
+**Keep `work/memory.md` current.** Rewrite it at every gate exit, after every
+spawn/`DONE`, and **before compact or ending the session**. Set **Gate** to what
+`--check-memory` prints (`G0` `G1` `G2` `G3` `G6`). It is what a fresh session
+reads first; its **Immediate attention** table is what stops the next agent
+walking into a known trap. Prompt wording does not keep it current — the script
+does.
 
 **Estimate in LLM units** — turns, tool calls, complexity band, phases. Never days or
 hours. A human calendar estimate for agent work is a fiction that misleads everyone.

@@ -73,9 +73,10 @@ G1 exit is in [reference/gates.md](../../reference/gates.md). In short:
 - [ ] Dependency order holds — no task needs output from a later one
 - [ ] `[P]` markers name genuinely disjoint file sets
 
-Regenerate the views, append to `.foreman/log.md`, and **return to `/foreman`**,
-which routes to G2. Do not critique in this session — the planner attacking its
-own plan is how G2 isolation dies.
+Regenerate the views, append to `.foreman/log.md`, rewrite `.foreman/work/memory.md`
+(**Gate** `G2`; live traps under *Immediate attention*), run `--check-memory`
+until it exits 0, and **return to `/foreman`**, which routes to G2. Do not critique
+in this session — the planner attacking its own plan is how G2 isolation dies.
 
 ```bash
 PLUGIN_ROOT="${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"

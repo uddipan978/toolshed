@@ -64,4 +64,6 @@ G0 is not clear until:
 - [ ] `constitution.md`'s Commands table has real commands, not placeholders
 - [ ] The user has confirmed you have understood the requirement
 
-Then append to `.foreman/log.md` and return to `/foreman`, which routes to G1.
+Then append to `.foreman/log.md`, rewrite `.foreman/work/memory.md` (**Gate** `G1`
+once requirements are clean; live traps under *Immediate attention*), run
+`--check-memory` until it exits 0, and return to `/foreman`, which routes to G1.

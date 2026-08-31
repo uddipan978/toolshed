@@ -89,7 +89,7 @@ its Activity log is empty, the brief has no `**Task file**`, or a developer has 
 ├── agents/domain.md              how to read this repo's docs, and which drift
 ├── log.md                        append-only activity log
 └── work/                        ← GITIGNORED. Agent scratchpad.
-    ├── memory.md                 read this first — running state, immediate attention
+    ├── memory.md                 read this first; **Gate** must match `--check-memory`
     ├── sessions/<name>/          brief, progress, status, stream, handovers
     ├── research/  screenshots/  errors/
     └── dashboard.html            live ops console — session gauges, spend, alerts

@@ -19,6 +19,9 @@ G2 is `--g2-clear`, not "CRITIQUE.md exists". You close findings; the critic doe
 Spawn G2a only when `--g2-spawn` exits 0 (max 4 rounds). Set `pending` only when
 `--g2-may-pending` exits 0. Do not rewind `done` yourself.
 
+`work/memory.md` **Gate** must match `--check-memory`. Rewrite it at every gate
+exit and before compact. Do not route on a stale file.
+
 3–5 concurrent workers. Never more. Fan out only across `[P]` tasks with disjoint
 file sets. Scale to the request.
 

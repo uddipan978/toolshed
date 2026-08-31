@@ -727,6 +727,84 @@ def may_set_pending(d: dict) -> tuple[bool, str]:
     )
 
 
+# --- work/memory.md -----------------------------------------------------------
+# Gitignored running state. Prompt "keep this current" is not enough — a G0
+# label survived six G2 rounds in the wild. **Gate** vs artefacts is the check.
+
+GATE_TOKEN = re.compile(r"G[0-6]", re.I)
+MEMORY_GATE_NONE = frozenset({
+    "", "_none_", "none", "n/a", "-", "—", "_unknown_",
+})
+
+
+def infer_gate(root: Path) -> str:
+    """Where the router would go, from artefacts. Same table as `/foreman` Step 1."""
+    req = root / "REQUIREMENTS.md"
+    if not req.is_file():
+        return "G0"
+    text = req.read_text(errors="replace")
+    if "[NEEDS CLARIFICATION]" in text:
+        return "G0"
+    tasks = all_tasks(root)
+    if not tasks:
+        return "G1"
+    if not critique_is_clear(parse_critique(root / "CRITIQUE.md")):
+        return "G2"
+    if all(t.get("status") == "done" for t in tasks):
+        return "G6"
+    return "G3"
+
+
+def _norm_memory_gate(val: str) -> str | None:
+    raw = (val or "").strip()
+    if raw.lower() in MEMORY_GATE_NONE:
+        return None
+    m = GATE_TOKEN.search(raw)
+    if not m:
+        return None
+    g = m.group(0).upper()
+    if g in ("G4", "G5"):
+        return "G3"
+    return g
+
+
+def parse_memory(path: Path) -> dict:
+    """Head fields of work/memory.md. Missing file is a dict, not an exception."""
+    result = {
+        "exists": False,
+        "path": path,
+        "gate": None,
+        "last_updated": "",
+    }
+    if not path.exists():
+        return result
+    result["exists"] = True
+    text = path.read_text(errors="replace")
+    head = text[: text.find("\n## ")] if "\n## " in text else text
+    fields = _fields(head)
+    result["last_updated"] = fields.get("last updated", "")
+    result["gate"] = _norm_memory_gate(fields.get("gate", ""))
+    return result
+
+
+def memory_problems(root: Path) -> list[str]:
+    """Stale or missing running state. `--check-memory` reports these."""
+    expected = infer_gate(root)
+    d = parse_memory(root / "work" / "memory.md")
+    if not d["exists"]:
+        return [f"memory.md is missing (expected **Gate** {expected})"]
+    if d["gate"] is None:
+        return [
+            f"**Gate** is missing (expected {expected}) — rewrite before routing"
+        ]
+    if d["gate"] != expected:
+        return [
+            f"**Gate** is {d['gate']} but artefacts are at {expected} — "
+            "rewrite memory.md before routing"
+        ]
+    return []
+
+
 # --- layout ---------------------------------------------------------------
 # .foreman/        tracked   — what the team reads: spec, tasks, decisions, status
 # .foreman/work/   ignored   — what the agents use: sessions, memory, evidence

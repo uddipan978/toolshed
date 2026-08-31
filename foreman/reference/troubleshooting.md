@@ -42,6 +42,12 @@ bypass `spawn.sh`, produce an equivalent snapshot yourself.
 re-critique, or a thin "looks reasonable" body is not a passed gate. The router and
 the dashboard badge both call `verify_gate.py --g2-clear`.
 
+**`work/memory.md` going stale is a gate miss, not a style miss.** The file is
+gitignored, so compact loses whatever was only in the manager's head. `--check-memory`
+compares **Gate** to artefacts (`G0`–`G3`/`G6`). Non-zero: rewrite, then route.
+A **Last updated: G0 intake** after task files exist is the failure this check
+exists for.
+
 **G2a spawn is `--g2-spawn`, not a prompt `if`.** Missing file, thin file, or
 `pending` under the round cap exits 0. Open findings with `done`, `pending` at
 round 4, or a 4th counted spawn exits 1 — that is G2b, not another fork. Rewinding

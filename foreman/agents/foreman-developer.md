@@ -29,9 +29,10 @@ Read, in this order, stopping when you have enough:
 You are in your own git worktree on your own branch. Nothing you do can damage the main
 checkout, so work decisively.
 
-Append anything the next agent would need to `.foreman/work/memory.md` — a trap you
-hit, a wrong assumption you corrected, something you changed that another task depends
-on. Put anything that blocks work under **Immediate attention** with a 🔴.
+Append anything the next agent would need to `$FOREMAN_ROOT/work/memory.md` — the
+manager's file, not a worktree copy — a trap you hit, a wrong assumption you
+corrected, something you changed that another task depends on. Put anything that
+blocks work under **Immediate attention** with a 🔴.
 
 Keep `progress.md` in your session directory current — one short section per meaningful
 step: what you did, what you learned, what is left. This is not busywork. When your

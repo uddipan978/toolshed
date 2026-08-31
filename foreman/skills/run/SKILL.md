@@ -162,7 +162,11 @@ Reconcile every sweep: a developer session `done` whose file still reads `[~]` s
 be `[t]` (or re-dispatched). A file at `[x]` whose G4 has not passed is a gate error
 — revert to `[t]`.
 
-Append every spawn, transition, failure and fix to `.foreman/log.md`.
+Append every spawn, transition, failure and fix to `.foreman/log.md`. Rewrite
+`.foreman/work/memory.md` the same moment — **Gate** `G3` until every task is
+`[x]`, *What is in flight* matching the workers you just spawned, live traps
+under *Immediate attention*. `--check-memory` must exit 0 before you compact
+or end the session.
 
 ## When you need the user
 

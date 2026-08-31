@@ -17,6 +17,7 @@ session is untouched). CLI flags always run.
                                          re-critique not pending
   verify_gate.py --g2-spawn              G2a: exit 0 iff a critic should run (capped)
   verify_gate.py --g2-may-pending        G2b: exit 0 iff Re-critique may be set pending
+  verify_gate.py --check-memory          work/memory.md **Gate** matches artefacts
   verify_gate.py --has-ui                print "ui" or "no-ui"
 """
 from __future__ import annotations
@@ -31,8 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from foreman_lib import (  # noqa: E402
     critique_problems,
     has_ui,
+    infer_gate,
     load_json,
     may_set_pending,
+    memory_problems,
     parse_critique,
     parse_task,
     save_json,
@@ -194,16 +197,28 @@ def main() -> int:
                     help="exit 0 iff G2b may set Re-critique pending")
     ap.add_argument("--no-count", action="store_true",
                     help="with --g2-spawn, do not increment work/g2.json")
+    ap.add_argument("--check-memory", action="store_true",
+                    help="exit 1 unless work/memory.md **Gate** matches artefacts")
     ap.add_argument("--has-ui", action="store_true",
                     help="print 'ui' or 'no-ui' from constitution.md's app URL")
     ap.add_argument("--root", default=".foreman")
     args = ap.parse_args()
 
     if args.has_ui or args.check_critique or args.g2_clear or args.g2_spawn \
-            or args.g2_may_pending:
+            or args.g2_may_pending or args.check_memory:
         root = Path(args.root).resolve()
         if args.has_ui:
             print("ui" if has_ui(root) else "no-ui")
+            return 0
+        if args.check_memory:
+            problems = memory_problems(root)
+            expected = infer_gate(root)
+            if problems:
+                print("[foreman gate] memory.md is stale:\n- "
+                      + "\n- ".join(problems), file=sys.stderr)
+                print(f"expected **Gate** {expected}", file=sys.stderr)
+                return 1
+            print(f"memory.md is current (**Gate** {expected})")
             return 0
         if args.g2_spawn:
             spawn, reason = should_spawn_critic(root, count=not args.no_count)
