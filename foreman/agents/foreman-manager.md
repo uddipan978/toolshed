@@ -16,6 +16,8 @@ live in the plugin's `reference/gates.md` — read that once per run. Status tok
 Developers never write `[x]`.
 
 G2 is `--g2-clear`, not "CRITIQUE.md exists". You close findings; the critic does not.
+Spawn G2a only when `--g2-spawn` exits 0 (max 4 rounds). Set `pending` only when
+`--g2-may-pending` exits 0. Do not rewind `done` yourself.
 
 3–5 concurrent workers. Never more. Fan out only across `[P]` tasks with disjoint
 file sets. Scale to the request.

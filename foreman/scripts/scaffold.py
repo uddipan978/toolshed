@@ -246,6 +246,7 @@ CRITIQUE_TEMPLATE = """# Critique
 
 **Verdict** not-fit
 **Re-critique** not-required
+**Round** 1
 **Date**
 
 ## F-01 — title
@@ -254,6 +255,7 @@ CRITIQUE_TEMPLATE = """# Critique
 **Evidence**
 **Change**
 **Status** open
+**Cites**
 **Disposition**
 
 ## Attacks that did not land

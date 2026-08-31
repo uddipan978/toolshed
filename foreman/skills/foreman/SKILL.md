@@ -67,16 +67,28 @@ you to skip one, say what it protects against, then do as they ask and record it
 
 Do **not** critique in this session. The planner must not attack its own plan.
 
+G2a is capped at **4 rounds**. Spawn is `--g2-spawn`, not a prompt `if`. `done` is
+not a toggle — set `pending` only when `--g2-may-pending` exits 0.
+
 ### G2a — spawn the critic
 
-If `CRITIQUE.md` is missing, or `--check-critique` fails, or **Re-critique** is `pending`:
-
-**Claude:** invoke `/foreman:critique` (forked skill). **Grok:** `context: fork` is not a
-skill field — spawn a critic worker, same tree, as in [harness.md](../../reference/harness.md):
+Ask the script. Do not interpret the file:
 
 ```bash
-"$PLUGIN_ROOT/scripts/spawn.sh" --name g2-critic --agent foreman-critic \
-  --brief .foreman/work/sessions/g2-critic/brief.md --root .foreman \
+python3 "$PLUGIN_ROOT/scripts/verify_gate.py" --g2-spawn --root .foreman
+```
+
+Exit 0: spawn (the script has counted this round). Exit 1: do **not** spawn —
+read stderr. Open findings with **Re-critique** `done` are G2b, not another fork.
+`pending` at round 4 is also not a fork: set `done` and close findings.
+
+**Claude:** invoke `/foreman:critique` (forked skill). **Grok:** `context: fork` is not a
+skill field — spawn a critic worker, same tree, as in [harness.md](../../reference/harness.md).
+Name it `g2-critic-<N>` for the round about to run:
+
+```bash
+"$PLUGIN_ROOT/scripts/spawn.sh" --name g2-critic-1 --agent foreman-critic \
+  --brief .foreman/work/sessions/g2-critic-1/brief.md --root .foreman \
   --worktree no --deadline 45 --turns 80
 ```
 
@@ -86,7 +98,8 @@ When the critic returns:
 python3 "$PLUGIN_ROOT/scripts/verify_gate.py" --check-critique --root .foreman
 ```
 
-Non-zero: re-invoke the critic with the stderr. Do not proceed on a thin file.
+Non-zero: re-invoke at most 3 times (`--g2-spawn` counts schema retries). After 3
+thin files, stop and report. Do not proceed on a thin file.
 
 ### G2b — disposition (this session)
 
@@ -94,11 +107,26 @@ Every finding starts `open`. You set `fixed` or `refuted` and fill **Disposition
 Schema: [reference/critique-format.md](../../reference/critique-format.md).
 
 - **`fixed`:** edit the plan as **Change** specified. Quote the edit in **Disposition**.
-  Severity 3–4: set document **Re-critique** to `pending` and return to G2a.
 - **`refuted`:** **Disposition** cites a file-level reason the finding is wrong.
   Not "we'll live with it" unless the user chose that.
 
-Then re-run `--g2-clear`. Non-zero: stay in G2. Zero: G3–G5.
+Then:
+
+```bash
+python3 "$PLUGIN_ROOT/scripts/verify_gate.py" --g2-may-pending --root .foreman
+```
+
+Exit 0: set **Re-critique** to `pending` and return to G2a (`--g2-spawn`).
+Exit 1: leave **Re-critique** as `done` (or `not-required`). Do **not** rewind
+`done` to `pending`.
+
+`--g2-may-pending` is 0 only when every finding is closed, **Round** is under 4,
+and at least one `fixed` finding is severity 4, or severity 3 whose **Attack** is
+`decomposition`, `missing-work`, or `traceability`. Severity 3 `acceptance` /
+`over-engineering` / `other` you verify yourself — they do not buy another fork.
+
+Then `--g2-clear`. Non-zero: stay in G2 (G2b if `--g2-spawn` exits 1; G2a only if
+`--g2-spawn` exits 0). Zero: G3–G5.
 
 A `CRITIQUE.md` that exists with open findings is not a passed gate.
 

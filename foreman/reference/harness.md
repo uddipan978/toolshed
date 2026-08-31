@@ -31,14 +31,17 @@ Grok sets `GROK_PLUGIN_ROOT` (and a `CLAUDE_PLUGIN_ROOT` alias on hooks). Claude
 Claude's critique skill uses `context: fork`. Grok skills do not. On Grok, spawn the critic as a worker in the same tree:
 
 ```bash
-"$PLUGIN_ROOT/scripts/spawn.sh" --name g2-critic --agent foreman-critic \
-  --brief .foreman/work/sessions/g2-critic/brief.md --root .foreman \
+"$PLUGIN_ROOT/scripts/spawn.sh" --name g2-critic-1 --agent foreman-critic \
+  --brief .foreman/work/sessions/g2-critic-1/brief.md --root .foreman \
   --worktree no --deadline 45 --turns 80
 ```
 
+Name later rounds `g2-critic-2` … `g2-critic-4`. Never a fifth. `--g2-spawn` is
+what decides whether to launch; do not spawn on a prompt `if`.
+
 Brief: write `.foreman/CRITIQUE.md` only; do not edit the plan; do not close findings. Then `--check-critique` as in [gates.md](gates.md).
 
-On Claude, keep invoking `/foreman:critique`.
+On Claude, invoke `/foreman:critique` only after `--g2-spawn` exits 0.
 
 ## POKE
 

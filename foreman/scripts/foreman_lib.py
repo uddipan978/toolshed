@@ -350,11 +350,14 @@ def has_ui(root: Path) -> bool:
 # --- CRITIQUE.md --------------------------------------------------------------
 # Schema: reference/critique-format.md. This parser is the mechanical twin.
 
-CRITIQUE_FIELD = re.compile(r"\*\*([A-Za-z0-9][A-Za-z0-9 _-]*)\*\*\s*(.*)$", re.M)
+# [ \t]* not \s*: an empty **Disposition** must not swallow the next **Field**.
+CRITIQUE_FIELD = re.compile(r"\*\*([A-Za-z0-9][A-Za-z0-9 _-]*)\*\*[ \t]*(.*)$", re.M)
 CRITIQUE_FINDING = re.compile(r"^##\s+(F-\d+)\s*[—–-]\s*(.+)$", re.M)
 ATTACKS_HELD = re.compile(
     r"^##\s+Attacks that did not land\s*$", re.M | re.I
 )
+CITES_IDS = re.compile(r"F-\d+", re.I)
+FID_NUM = re.compile(r"(\d+)")
 VERDICT_VALUES = {"fit", "not-fit"}
 RECRITIQUE_VALUES = {"not-required", "pending", "done"}
 STATUS_VALUES = {"open", "fixed", "refuted"}
@@ -362,6 +365,14 @@ ATTACK_VALUES = {
     "traceability", "decomposition", "acceptance",
     "missing-work", "over-engineering", "other",
 }
+# Graph-changing attacks: a severity-3 fix here may buy another G2a round.
+# acceptance / over-engineering / other are manager-verifiable and do not.
+RECITIQUE_FORCE_ATTACKS = frozenset({
+    "decomposition", "missing-work", "traceability",
+})
+MAX_G2A_ROUNDS = 4
+MAX_G2A_SCHEMA_RETRIES = 3
+G2_STATE_FILE = "g2.json"
 
 
 def _norm_token(val: str) -> str:
@@ -389,6 +400,48 @@ def _parse_severity(val: str) -> int | None:
     return int(m.group(0)) if m else None
 
 
+def _parse_round(val: str, recrit: str | None = None) -> int:
+    """**Round** 1–4. Explicit values clamp to the cap.
+
+    Missing: `not-required`/`pending` → 1; `done` → 2 (a recritique already
+    completed). An in-flight file from before **Round** existed must not reset
+    the cap to zero.
+    """
+    m = re.search(r"\d+", (val or "").strip())
+    if m:
+        n = int(m.group(0))
+        if n < 1:
+            return 1
+        return min(n, MAX_G2A_ROUNDS)
+    if recrit == "done":
+        return 2
+    return 1
+
+
+def _fid_num(fid: str) -> int | None:
+    m = FID_NUM.search(fid or "")
+    return int(m.group(1)) if m else None
+
+
+def _parse_cites(val: str) -> list[str]:
+    return CITES_IDS.findall(val or "")
+
+
+def critique_round(d: dict) -> int:
+    r = d.get("round")
+    return r if isinstance(r, int) and r >= 1 else 1
+
+
+def finding_forces_recritique(f: dict) -> bool:
+    """A closed-as-fixed finding that is allowed to set **Re-critique** pending."""
+    if f.get("status") != "fixed":
+        return False
+    sev = f.get("severity")
+    if sev == 4:
+        return True
+    return sev == 3 and f.get("attack") in RECITIQUE_FORCE_ATTACKS
+
+
 def parse_critique(path: Path) -> dict:
     """Parse `.foreman/CRITIQUE.md`. Missing or malformed files still return a
     dict — `problems` lists every schema failure; `critique_is_clear` is the
@@ -398,6 +451,8 @@ def parse_critique(path: Path) -> dict:
         "path": path,
         "verdict": None,
         "re_critique": None,
+        "round": 1,
+        "round_explicit": False,
         "date": "",
         "findings": [],
         "attacks_held": "",
@@ -430,6 +485,9 @@ def parse_critique(path: Path) -> dict:
     recrit = _norm_token(meta.get("re-critique", meta.get("re critique", "")))
     result["verdict"] = verdict if verdict in VERDICT_VALUES else None
     result["re_critique"] = recrit if recrit in RECRITIQUE_VALUES else None
+    round_raw = meta.get("round", "")
+    result["round_explicit"] = bool(re.search(r"\d+", round_raw or ""))
+    result["round"] = _parse_round(round_raw, result["re_critique"])
     result["date"] = meta.get("date", "")
 
     for i, m in enumerate(headings):
@@ -447,6 +505,7 @@ def parse_critique(path: Path) -> dict:
             "change": f.get("change", "").strip(),
             "status": status_raw if status_raw in STATUS_VALUES else None,
             "disposition": f.get("disposition", "").strip(),
+            "cites": _parse_cites(f.get("cites", "")),
         })
 
     result["problems"] = _critique_schema_problems(result)
@@ -489,6 +548,33 @@ def _critique_schema_problems(d: dict) -> list[str]:
             problems.append(
                 f"{prefix}: **Status** must be `open`, `fixed`, or `refuted`"
             )
+    round_n = critique_round(d)
+    # Only enforce Cites when the critic wrote **Round** 2+. Inferring round
+    # from a pre-field `done` file must not fail-open into a spawn-on-malformed
+    # loop.
+    if round_n >= 2 and d.get("round_explicit"):
+        by_num = {_fid_num(x["id"]): x["id"] for x in d["findings"]
+                  if _fid_num(x["id"]) is not None}
+        for f in d["findings"]:
+            if f["status"] != "open":
+                continue
+            prefix = f["id"]
+            cites = f.get("cites") or []
+            if not cites:
+                problems.append(
+                    f"{prefix}: **Cites** is required on round {round_n}+ "
+                    "(name an earlier finding whose fix this attacks)"
+                )
+                continue
+            self_n = _fid_num(prefix)
+            for c in cites:
+                n = _fid_num(c)
+                if n not in by_num:
+                    problems.append(f"{prefix}: **Cites** {c} does not exist")
+                elif self_n is not None and n >= self_n:
+                    problems.append(
+                        f"{prefix}: **Cites** must name an earlier finding, not {c}"
+                    )
     return problems
 
 
@@ -514,8 +600,131 @@ def critique_problems(root: Path, require_clear: bool = False) -> list[str]:
         if open_ids:
             problems.append("open findings: " + ", ".join(open_ids))
         if d.get("re_critique") == "pending":
-            problems.append("**Re-critique** is `pending` — re-invoke `/foreman:critique`")
+            rnd = critique_round(d)
+            if rnd >= MAX_G2A_ROUNDS:
+                problems.append(
+                    f"**Re-critique** is `pending` at round cap ({rnd}/{MAX_G2A_ROUNDS}) "
+                    "— set it to `done` and close remaining findings. Do not spawn "
+                    "another critic"
+                )
+            else:
+                problems.append(
+                    f"**Re-critique** is `pending` (round {rnd}/{MAX_G2A_ROUNDS}) "
+                    "— run `--g2-spawn` and invoke `/foreman:critique` only if it exits 0"
+                )
     return problems
+
+
+def load_g2_state(root: Path) -> dict:
+    """Counted G2a spawns / schema retries. Lives in gitignored work/."""
+    data = load_json(root / "work" / G2_STATE_FILE, default={})
+    return {
+        "spawns": int(data.get("spawns") or 0),
+        "schema_retries": int(data.get("schema_retries") or 0),
+    }
+
+
+def save_g2_state(root: Path, state: dict) -> None:
+    save_json(root / "work" / G2_STATE_FILE, {
+        "spawns": int(state.get("spawns") or 0),
+        "schema_retries": int(state.get("schema_retries") or 0),
+    })
+
+
+def should_spawn_critic(root: Path, count: bool = False) -> tuple[bool, str]:
+    """Whether G2a should run. The manager must not interpret this itself.
+
+    Exit-0 reasons are spawn; exit-1 reasons are skip. When `count` is true and
+    the decision is spawn, persist the increment to work/g2.json so a manager
+    that forgets **Round** still cannot fork past MAX_G2A_ROUNDS, and a thin
+    file cannot be retried past MAX_G2A_SCHEMA_RETRIES.
+    """
+    state = load_g2_state(root)
+    if state["spawns"] >= MAX_G2A_ROUNDS:
+        return False, (
+            f"G2a skip: spawn cap reached ({state['spawns']}/{MAX_G2A_ROUNDS}) "
+            "— set **Re-critique** to `done` and close remaining findings"
+        )
+
+    d = parse_critique(root / "CRITIQUE.md")
+    if not d["exists"]:
+        if count:
+            state["spawns"] += 1
+            state["schema_retries"] = 0
+            save_g2_state(root, state)
+        return True, "G2a spawn: CRITIQUE.md is missing"
+
+    if not critique_is_well_formed(d):
+        if state["schema_retries"] >= MAX_G2A_SCHEMA_RETRIES:
+            return False, (
+                f"G2a skip: schema retry cap ({MAX_G2A_SCHEMA_RETRIES}) — stop "
+                "and report. Do not keep forking on a thin file"
+            )
+        if count:
+            state["schema_retries"] += 1
+            save_g2_state(root, state)
+        why = d["problems"][0] if d.get("problems") else "not well-formed"
+        return True, f"G2a spawn: CRITIQUE.md is not well-formed — {why}"
+
+    if d.get("re_critique") == "pending":
+        rnd = critique_round(d)
+        if rnd >= MAX_G2A_ROUNDS:
+            return False, (
+                f"G2a skip: round cap reached ({rnd}/{MAX_G2A_ROUNDS}) — set "
+                "**Re-critique** to `done` and close remaining findings. Do not spawn"
+            )
+        if count:
+            state["spawns"] += 1
+            state["schema_retries"] = 0
+            save_g2_state(root, state)
+        return True, f"G2a spawn: **Re-critique** pending (round {rnd}/{MAX_G2A_ROUNDS})"
+
+    if critique_is_clear(d):
+        return False, "G2a skip: G2 is clear"
+    return False, (
+        "G2a skip: well-formed and not pending — G2b disposition, do not spawn"
+    )
+
+
+def _this_round_findings(d: dict) -> list[dict]:
+    """Findings introduced in the round just completed.
+
+    Round 1 has no **Cites**. Later rounds must cite, so cited findings are
+    the new ones. A pre-**Round** `done` file with no cites is treated as
+    having nothing new — otherwise historical F-01 keeps buying forks.
+    """
+    findings = d.get("findings") or []
+    cited = [f for f in findings if f.get("cites")]
+    if cited:
+        return cited
+    if critique_round(d) <= 1:
+        return list(findings)
+    return []
+
+
+def may_set_pending(d: dict) -> tuple[bool, str]:
+    """Whether G2b may rewind Re-critique to pending. `done` is not a toggle."""
+    if not critique_is_well_formed(d):
+        return False, "CRITIQUE.md is not well-formed"
+    if any(f.get("status") == "open" for f in d.get("findings", [])):
+        return False, "open findings remain — disposition them first"
+    rnd = critique_round(d)
+    if rnd >= MAX_G2A_ROUNDS:
+        return False, (
+            f"round cap ({rnd}/{MAX_G2A_ROUNDS}) — leave **Re-critique** `done`"
+        )
+    if d.get("re_critique") == "pending":
+        return False, "already pending"
+    forced = [f["id"] for f in _this_round_findings(d) if finding_forces_recritique(f)]
+    if not forced:
+        return False, (
+            "no severity-4 or graph-changing severity-3 fixes this round "
+            "— do not set pending"
+        )
+    return True, (
+        f"may set pending for {', '.join(forced)} "
+        f"(round {rnd}/{MAX_G2A_ROUNDS})"
+    )
 
 
 # --- layout ---------------------------------------------------------------

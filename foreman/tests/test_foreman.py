@@ -11,14 +11,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from foreman_lib import (  # noqa: E402
+    MAX_G2A_ROUNDS,
+    MAX_G2A_SCHEMA_RETRIES,
     critique_is_clear,
     critique_is_well_formed,
     critique_problems,
+    critique_round,
     detect_harness,
+    finding_forces_recritique,
     has_ui,
+    load_g2_state,
+    may_set_pending,
     parse_critique,
     parse_task,
     read_stream,
+    should_spawn_critic,
 )
 from verify_gate import task_gate_problems  # noqa: E402
 
@@ -182,6 +189,290 @@ class CritiqueTests(unittest.TestCase):
         d = parse_critique(self._write(NOTFIT_OPEN))
         self.assertTrue(d["exists"])
         self.assertFalse(critique_is_clear(d))
+
+    def test_missing_round_defaults_to_one(self):
+        d = parse_critique(self._write(NOTFIT_OPEN))
+        self.assertEqual(d["round"], 1)
+        self.assertEqual(critique_round(d), 1)
+
+    def test_done_without_round_defaults_to_two(self):
+        """Pre-Round files that already recritiqued must not reset the cap."""
+        d = parse_critique(self._write(NOTFIT_CLOSED))
+        self.assertEqual(d["round"], 2)
+
+
+ROUND2_CITED = """# Critique
+
+**Verdict** not-fit
+**Re-critique** done
+**Round** 2
+**Date** 2026-08-26
+
+## F-01 — two [P] tasks share src/lib/session.ts
+**Severity** 3
+**Attack** decomposition
+**Evidence** T-01-02 and T-01-03 both name src/lib/session.ts
+**Change** drop [P] on T-01-03
+**Status** fixed
+**Disposition** [P] dropped.
+
+## F-02 — the [P] drop did not land; T-01-03 is still parallel
+**Severity** 3
+**Attack** decomposition
+**Evidence** T-01-03 still reads **Parallel** [P]
+**Change** drop [P] on T-01-03; add Depends on T-01-02
+**Status** open
+**Cites** F-01
+**Disposition**
+
+## Attacks that did not land
+
+- Over-engineering: no speculative layer.
+"""
+
+ROUND2_NO_CITES = ROUND2_CITED.replace("**Cites** F-01\n", "")
+
+ROUND2_BAD_CITES = ROUND2_CITED.replace("**Cites** F-01", "**Cites** F-99")
+
+ROUND4_PENDING = """# Critique
+
+**Verdict** not-fit
+**Re-critique** pending
+**Round** 4
+**Date** 2026-08-26
+
+## F-01 — two [P] tasks share src/lib/session.ts
+**Severity** 3
+**Attack** decomposition
+**Evidence** T-01-02 and T-01-03 both name src/lib/session.ts
+**Change** drop [P] on T-01-03
+**Status** fixed
+**Disposition** plan edited; cap reached.
+
+## Attacks that did not land
+
+- Over-engineering: no speculative layer.
+"""
+
+ROUND4_DONE_CLOSED = ROUND4_PENDING.replace(
+    "**Re-critique** pending", "**Re-critique** done"
+)
+
+ACCEPTANCE_FIXED = """# Critique
+
+**Verdict** not-fit
+**Re-critique** done
+**Round** 1
+**Date** 2026-08-26
+
+## F-01 — Verify command cannot fail
+**Severity** 3
+**Attack** acceptance
+**Evidence** T-07-01 ends npm test with no file argument
+**Change** name the test file in Verify
+**Status** fixed
+**Disposition** Verify now names src/foo.test.ts
+
+## Attacks that did not land
+
+- Over-engineering: no speculative layer.
+"""
+
+
+class G2LoopTests(unittest.TestCase):
+    def _root(self, body: str | None) -> Path:
+        d = Path(tempfile.mkdtemp())
+        if body is not None:
+            (d / "CRITIQUE.md").write_text(body)
+        return d
+
+    def test_round2_open_requires_cites(self):
+        d = parse_critique(self._root(ROUND2_NO_CITES) / "CRITIQUE.md")
+        self.assertFalse(critique_is_well_formed(d), d["problems"])
+        self.assertTrue(any("Cites" in p for p in d["problems"]))
+
+    def test_round2_open_with_cites_is_well_formed(self):
+        d = parse_critique(self._root(ROUND2_CITED) / "CRITIQUE.md")
+        self.assertTrue(critique_is_well_formed(d), d["problems"])
+        self.assertEqual(d["findings"][1]["cites"], ["F-01"])
+        self.assertFalse(critique_is_clear(d))
+
+    def test_empty_disposition_does_not_swallow_cites(self):
+        body = ROUND2_CITED.replace(
+            "**Cites** F-01\n**Disposition**",
+            "**Disposition**\n**Cites** F-01",
+        )
+        d = parse_critique(self._root(body) / "CRITIQUE.md")
+        self.assertEqual(d["findings"][1]["cites"], ["F-01"])
+        self.assertTrue(critique_is_well_formed(d), d["problems"])
+
+    def test_round2_cites_must_exist(self):
+        d = parse_critique(self._root(ROUND2_BAD_CITES) / "CRITIQUE.md")
+        self.assertFalse(critique_is_well_formed(d))
+        self.assertTrue(any("F-99" in p for p in d["problems"]))
+
+    def test_round1_open_does_not_need_cites(self):
+        d = parse_critique(self._root(NOTFIT_OPEN) / "CRITIQUE.md")
+        self.assertTrue(critique_is_well_formed(d), d["problems"])
+
+    def test_spawn_missing_file(self):
+        root = self._root(None)
+        spawn, reason = should_spawn_critic(root, count=False)
+        self.assertTrue(spawn)
+        self.assertIn("missing", reason)
+
+    def test_spawn_pending_under_cap(self):
+        root = self._root(PENDING)
+        spawn, reason = should_spawn_critic(root, count=False)
+        self.assertTrue(spawn, reason)
+        self.assertIn("pending", reason)
+
+    def test_spawn_skips_open_findings_when_not_pending(self):
+        """The loop: well-formed + done + open is G2b, not another G2a."""
+        root = self._root(ROUND2_CITED)
+        spawn, reason = should_spawn_critic(root, count=False)
+        self.assertFalse(spawn)
+        self.assertIn("G2b", reason)
+
+    def test_pre_round_done_with_open_is_g2b_not_malformed_spawn(self):
+        """In-flight files from before **Round** existed must not fail Cites
+        and fork again. They go to G2b."""
+        body = NOTFIT_OPEN.replace("not-required", "done")
+        root = self._root(body)
+        d = parse_critique(root / "CRITIQUE.md")
+        self.assertEqual(d["round"], 2)
+        self.assertFalse(d["round_explicit"])
+        self.assertTrue(critique_is_well_formed(d), d["problems"])
+        spawn, reason = should_spawn_critic(root, count=False)
+        self.assertFalse(spawn)
+        self.assertIn("G2b", reason)
+
+    def test_spawn_skips_pending_at_round_cap(self):
+        root = self._root(ROUND4_PENDING)
+        d = parse_critique(root / "CRITIQUE.md")
+        self.assertTrue(critique_is_well_formed(d), d["problems"])
+        self.assertFalse(critique_is_clear(d))
+        spawn, reason = should_spawn_critic(root, count=False)
+        self.assertFalse(spawn)
+        self.assertIn("round cap", reason)
+        probs = critique_problems(root, require_clear=True)
+        self.assertTrue(any("round cap" in p for p in probs))
+
+    def test_round4_closed_done_is_clear_and_does_not_spawn(self):
+        root = self._root(ROUND4_DONE_CLOSED)
+        d = parse_critique(root / "CRITIQUE.md")
+        self.assertTrue(critique_is_clear(d), d["problems"])
+        spawn, _ = should_spawn_critic(root, count=False)
+        self.assertFalse(spawn)
+        allowed, reason = may_set_pending(d)
+        self.assertFalse(allowed)
+        self.assertIn("round cap", reason)
+
+    def test_may_pending_graph_changing_sev3(self):
+        # Round 1 just closed — Re-critique is still not-required.
+        body = NOTFIT_CLOSED.replace("**Re-critique** done", "**Re-critique** not-required")
+        body = body.replace("**Date**", "**Round** 1\n**Date**")
+        d = parse_critique(self._root(body) / "CRITIQUE.md")
+        self.assertEqual(d["round"], 1)
+        self.assertTrue(finding_forces_recritique(d["findings"][0]))
+        allowed, reason = may_set_pending(d)
+        self.assertTrue(allowed, reason)
+
+    def test_may_pending_ignores_historical_fixes(self):
+        """A done file with no new cited findings must not keep forking."""
+        d = parse_critique(self._root(NOTFIT_CLOSED) / "CRITIQUE.md")
+        allowed, reason = may_set_pending(d)
+        self.assertFalse(allowed)
+        self.assertIn("this round", reason)
+
+    def test_may_pending_round2_cited_fix(self):
+        body = ROUND2_CITED.replace("**Status** open", "**Status** fixed", 1)
+        body = body.replace(
+            "**Cites** F-01\n**Disposition**",
+            "**Cites** F-01\n**Disposition** still parallel; [P] dropped now.",
+        )
+        d = parse_critique(self._root(body) / "CRITIQUE.md")
+        self.assertTrue(critique_is_well_formed(d), d["problems"])
+        self.assertEqual(d["findings"][1]["status"], "fixed")
+        allowed, reason = may_set_pending(d)
+        self.assertTrue(allowed, reason)
+        self.assertIn("F-02", reason)
+
+    def test_may_pending_rejects_acceptance_sev3(self):
+        d = parse_critique(self._root(ACCEPTANCE_FIXED) / "CRITIQUE.md")
+        self.assertTrue(critique_is_clear(d), d["problems"])
+        self.assertFalse(finding_forces_recritique(d["findings"][0]))
+        allowed, reason = may_set_pending(d)
+        self.assertFalse(allowed)
+        self.assertIn("do not set pending", reason)
+
+    def test_may_pending_rejects_open_findings(self):
+        d = parse_critique(self._root(NOTFIT_OPEN) / "CRITIQUE.md")
+        allowed, reason = may_set_pending(d)
+        self.assertFalse(allowed)
+        self.assertIn("open findings", reason)
+
+    def test_counted_spawns_cap_at_four(self):
+        root = self._root(None)
+        for i in range(MAX_G2A_ROUNDS):
+            spawn, reason = should_spawn_critic(root, count=True)
+            self.assertTrue(spawn, f"spawn {i + 1}: {reason}")
+        spawn, reason = should_spawn_critic(root, count=True)
+        self.assertFalse(spawn)
+        self.assertIn("spawn cap", reason)
+        self.assertEqual(load_g2_state(root)["spawns"], MAX_G2A_ROUNDS)
+
+    def test_schema_retries_cap(self):
+        root = self._root(THIN)
+        for i in range(MAX_G2A_SCHEMA_RETRIES):
+            spawn, reason = should_spawn_critic(root, count=True)
+            self.assertTrue(spawn, f"retry {i + 1}: {reason}")
+        spawn, reason = should_spawn_critic(root, count=True)
+        self.assertFalse(spawn)
+        self.assertIn("schema retry cap", reason)
+
+    def test_g2_spawn_cli(self):
+        import subprocess
+        root = self._root(ROUND2_CITED)
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "verify_gate.py"),
+             "--g2-spawn", "--no-count", "--root", str(root)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("G2b", proc.stderr)
+
+        root2 = self._root(PENDING)
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "verify_gate.py"),
+             "--g2-spawn", "--no-count", "--root", str(root2)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("pending", proc.stdout)
+
+    def test_g2_may_pending_cli(self):
+        import subprocess
+        body = NOTFIT_CLOSED.replace(
+            "**Re-critique** done", "**Re-critique** not-required"
+        ).replace("**Date**", "**Round** 1\n**Date**")
+        root = self._root(body)
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "verify_gate.py"),
+             "--g2-may-pending", "--root", str(root)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("may set pending", proc.stdout)
+
+        root2 = self._root(ROUND4_DONE_CLOSED)
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "verify_gate.py"),
+             "--g2-may-pending", "--root", str(root2)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("round cap", proc.stderr)
 
 
 class HasUiTests(unittest.TestCase):

@@ -27,9 +27,23 @@ you as a `foreman-critic` worker with `--worktree no` instead. Same job.
 - `${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/reference/critique-format.md` — the output schema
 - `${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/reference/gates.md` — severity 0–4
 
-If a previous `.foreman/CRITIQUE.md` exists, read it. Keep existing findings. Do not
-change their **Status** or **Disposition**. If a `fixed` item is still wrong, add a
-new finding that cites it. Set **Re-critique** to `done` when this is a second round.
+If a previous `.foreman/CRITIQUE.md` exists, read it.
+
+**Round 1** (no file, or you are writing the first critique): attack on every axis
+below. Set **Round** to `1` and **Re-critique** to `not-required`. Every finding
+**Status** is `open`. Leave **Cites** empty.
+
+**Round 2–4** (**Re-critique** is `pending`): this is a verify pass, not a new
+review. Keep existing findings. Do not change their **Status** or **Disposition**.
+Set **Round** to the previous **Round** plus one (never above 4). Set
+**Re-critique** to `done`. New findings only where a `fixed` item is still wrong,
+or the fix introduced a defect. Each new **open** finding MUST have **Cites**
+`F-NN` naming that earlier finding. Do not open a new attack axis — a recritique
+that reads like a first round fails `--check-critique`. If every previous fix
+landed and introduced nothing, write no new findings and update **Verdict**.
+
+Never write **Round** above 4. Never set **Re-critique** to `pending` — that is
+the manager's field.
 
 ## Try to break it
 
@@ -66,9 +80,11 @@ what would settle it.
 
 `.foreman/CRITIQUE.md`, to the schema in `reference/critique-format.md`.
 
-- Every finding **Status** is `open`. Leave **Disposition** empty.
+- Every new finding **Status** is `open`. Leave **Disposition** empty.
 - Do not edit task files, modules, requirements, constitution, or source.
-- **Re-critique** is `not-required` on the first round; `done` on a later round.
+- **Re-critique** is `not-required` on round 1; `done` on every later round.
+- **Round** is `1` on the first write; previous plus one after that, max 4.
+- Round 2–4 open findings carry **Cites**.
 
 End with **Attacks that did not land** — required for a `fit` verdict.
 

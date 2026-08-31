@@ -30,7 +30,7 @@ Workers: Claude `claude -p`, Grok `grok --prompt-file`. See [reference/harness.m
 |---|---|---|
 | G0 | Intake — grill until nothing is assumed | main session + `/grilling` |
 | G1 | Plan — modules, tasks, dependencies, `[P]` markers | main session |
-| G2 | Critique — isolated attack, then manager disposition; `--g2-clear` | forked skill (Claude) or `foreman-critic` worker (Grok) |
+| G2 | Critique — isolated attack, then manager disposition; `--g2-clear`; max 4 G2a rounds (`--g2-spawn`) | forked skill (Claude) or `foreman-critic` worker (Grok) |
 | G3 | Develop — one task per session, own worktree | `foreman-developer` |
 | G4 | Test — cases written first, then executed | `foreman-tester` |
 | G5 | Beta — real-user perspective, no build context | `foreman-beta-tester` |

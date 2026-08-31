@@ -42,6 +42,12 @@ bypass `spawn.sh`, produce an equivalent snapshot yourself.
 re-critique, or a thin "looks reasonable" body is not a passed gate. The router and
 the dashboard badge both call `verify_gate.py --g2-clear`.
 
+**G2a spawn is `--g2-spawn`, not a prompt `if`.** Missing file, thin file, or
+`pending` under the round cap exits 0. Open findings with `done`, `pending` at
+round 4, or a 4th counted spawn exits 1 — that is G2b, not another fork. Rewinding
+`done` → `pending` without `--g2-may-pending` exiting 0 is the loop that burns
+rounds. Schema retries on a thin file stop at 3.
+
 ## Grok
 
 **`FOREMAN_HARNESS=grok`** (or a Grok TUI session: `GROK_SESSION_ID`) selects

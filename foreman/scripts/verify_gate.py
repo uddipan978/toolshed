@@ -15,6 +15,8 @@ session is untouched). CLI flags always run.
   verify_gate.py --check-critique        CRITIQUE.md is well-formed (open findings OK)
   verify_gate.py --g2-clear              G2 exit: well-formed, no open findings,
                                          re-critique not pending
+  verify_gate.py --g2-spawn              G2a: exit 0 iff a critic should run (capped)
+  verify_gate.py --g2-may-pending        G2b: exit 0 iff Re-critique may be set pending
   verify_gate.py --has-ui                print "ui" or "no-ui"
 """
 from __future__ import annotations
@@ -30,8 +32,11 @@ from foreman_lib import (  # noqa: E402
     critique_problems,
     has_ui,
     load_json,
+    may_set_pending,
+    parse_critique,
     parse_task,
     save_json,
+    should_spawn_critic,
 )
 
 # A blocking hook that can never be satisfied would trap the agent in a loop.
@@ -183,16 +188,37 @@ def main() -> int:
                     help="exit 1 unless CRITIQUE.md is well-formed")
     ap.add_argument("--g2-clear", action="store_true",
                     help="exit 1 unless G2 is clear (no open findings, re-critique not pending)")
+    ap.add_argument("--g2-spawn", action="store_true",
+                    help="exit 0 iff G2a should spawn a critic (counts toward the round cap)")
+    ap.add_argument("--g2-may-pending", action="store_true",
+                    help="exit 0 iff G2b may set Re-critique pending")
+    ap.add_argument("--no-count", action="store_true",
+                    help="with --g2-spawn, do not increment work/g2.json")
     ap.add_argument("--has-ui", action="store_true",
                     help="print 'ui' or 'no-ui' from constitution.md's app URL")
     ap.add_argument("--root", default=".foreman")
     args = ap.parse_args()
 
-    if args.has_ui or args.check_critique or args.g2_clear:
+    if args.has_ui or args.check_critique or args.g2_clear or args.g2_spawn \
+            or args.g2_may_pending:
         root = Path(args.root).resolve()
         if args.has_ui:
             print("ui" if has_ui(root) else "no-ui")
             return 0
+        if args.g2_spawn:
+            spawn, reason = should_spawn_critic(root, count=not args.no_count)
+            if spawn:
+                print(reason)
+                return 0
+            print("[foreman gate] " + reason, file=sys.stderr)
+            return 1
+        if args.g2_may_pending:
+            allowed, reason = may_set_pending(parse_critique(root / "CRITIQUE.md"))
+            if allowed:
+                print(reason)
+                return 0
+            print("[foreman gate] " + reason, file=sys.stderr)
+            return 1
         require_clear = bool(args.g2_clear)
         problems = critique_problems(root, require_clear=require_clear)
         ok = ("G2 is clear" if require_clear

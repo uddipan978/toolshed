@@ -22,7 +22,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from foreman_lib import all_sessions, all_tasks, parse_critique, critique_is_clear  # noqa: E402
+from foreman_lib import (  # noqa: E402
+    MAX_G2A_ROUNDS,
+    all_sessions,
+    all_tasks,
+    critique_is_clear,
+    critique_round,
+    parse_critique,
+)
 
 LANES = [
     ("backlog", "Backlog"),
@@ -124,7 +131,17 @@ def render_status(root: Path) -> str:
                 g2_rows.append((f"{f['id']} {f.get('title', '')}".strip(),
                                 "G2 finding open"))
         if crit.get("re_critique") == "pending":
-            g2_rows.append(("G2 re-critique", "pending — re-invoke `/foreman:critique`"))
+            rnd = critique_round(crit)
+            if rnd >= MAX_G2A_ROUNDS:
+                g2_rows.append((
+                    "G2 re-critique",
+                    f"round cap ({rnd}/{MAX_G2A_ROUNDS}) — set done, do not re-invoke",
+                ))
+            else:
+                g2_rows.append((
+                    "G2 re-critique",
+                    f"pending ({rnd}/{MAX_G2A_ROUNDS}) — run `--g2-spawn`",
+                ))
         if not g2_rows:
             why = (crit["problems"][0] if crit.get("problems")
                    else "not G2-clear")

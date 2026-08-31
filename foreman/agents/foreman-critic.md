@@ -14,6 +14,8 @@ requirements, constitution, or source. Do not set a finding's **Status** to `fix
 `refuted`. Do not fill **Disposition**. Those are the manager's job.
 
 Read the schema at the plugin's `reference/critique-format.md` and write that shape.
+Set **Round** (1–4). On a re-critique, keep existing findings, set **Re-critique**
+`done`, and give every new open finding **Cites** `F-NN`. Do not open a new axis.
 Attack axes and G2a procedure live in the `/foreman:critique` skill loaded with this
 fork. If you do not have it: traceability, decomposition, acceptance, missing-work,
 over-engineering.

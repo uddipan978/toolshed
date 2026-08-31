@@ -31,7 +31,7 @@ Used by G2 findings and G5 beta findings. One scale.
 | 0 | Cosmetic | close it; does not block | carry to G6 as known |
 | 1 | Nit | close it; does not block | carry to G6 as known |
 | 2 | Real, bounded gap | close it (`fixed` or `refuted`); does not by itself force a re-critique | carry to G6 as known |
-| 3 | Must change the plan / blocks the task | plan edit, then **Re-critique** `pending` | raise as a new task |
+| 3 | Must change the plan / blocks the task | plan edit. **Re-critique** `pending` only if `--g2-may-pending` exits 0 (graph-changing attack, round under 4) | raise as a new task |
 | 4 | Blocks the run | same as 3; do not spawn G3 while it is `open` | raise as a new task |
 
 ## G0 — Intake
@@ -71,16 +71,28 @@ the plan.
 
 Schema: [critique-format.md](critique-format.md). File existence is **not** G2.
 
+G2a is capped at **4 rounds**. Spawn is `--g2-spawn`, not a prompt `if`.
+`done` is not a toggle.
+
 ### G2a — Attack
 
-Invoke `/foreman:critique`. When it returns:
+```bash
+python3 ${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/verify_gate.py --g2-spawn --root .foreman
+```
+
+Exit 0: invoke `/foreman:critique` (Claude) or spawn `g2-critic-<N>` (Grok).
+Exit 1: do **not** spawn — read stderr. Open findings with `done` are G2b.
+`pending` at round 4 is G2b: set `done`, close findings.
+
+When the critic returns:
 
 ```bash
 python3 ${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/verify_gate.py --check-critique --root .foreman
 ```
 
-Non-zero: re-invoke the critic with the stderr. Do not proceed on a thin file.
-Do not critique in the manager session.
+Non-zero: re-invoke at most 3 times (`--g2-spawn` counts schema retries). After
+3 thin files, stop and report. Do not proceed on a thin file. Do not critique
+in the manager session.
 
 ### G2b — Disposition
 
@@ -88,9 +100,22 @@ Every finding starts `open`. The manager sets `fixed` or `refuted` and fills
 **Disposition**.
 
 - `fixed`: the plan files changed as **Change** specified. Quote the edit.
-  Severity 3–4 → set document **Re-critique** to `pending` and return to G2a.
 - `refuted`: **Disposition** cites a file-level reason the finding is wrong.
   Not “we’ll live with it” unless the user chose that.
+
+Then:
+
+```bash
+python3 ${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/verify_gate.py --g2-may-pending --root .foreman
+```
+
+Exit 0: set **Re-critique** to `pending` and return to G2a. Exit 1: leave
+**Re-critique** `done` (or `not-required`). Do not rewind `done` to `pending`.
+
+`--g2-may-pending` is 0 only when every finding is closed, **Round** is under 4,
+and at least one `fixed` finding is severity 4, or severity 3 whose **Attack**
+is `decomposition`, `missing-work`, or `traceability`. Severity 3 `acceptance`
+edits the manager verifies — they do not buy another fork.
 
 ### Exit (G2 clear)
 
@@ -100,7 +125,8 @@ python3 ${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/verify_gate.py --g2-c
 
 That command exits 0 only when the file is well-formed, no finding is `open`,
 and **Re-critique** is not `pending`. The router uses this, not `CRITIQUE.md`
-presence. The dashboard badge uses this.
+presence. The dashboard badge uses this. After round 4, close whatever remains
+and set `done` — do not spawn.
 
 ## G3 — Develop
 
