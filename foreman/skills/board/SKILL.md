@@ -20,7 +20,7 @@ Run all three. They are the same data for three different audiences:
 | `STATUS.md` | yes | **the default.** Plain markdown — renders in a repo browser, an editor, anywhere |
 | `board.html` | yes | a teammate who cloned and wants the visual board, no plugin needed |
 | `board.md` | yes | you, in Obsidian — drag-and-drop |
-| `work/dashboard.html` | no | the live ops console: session gauges, spend, alerts; click a task or session card to read that worker's `stream.jsonl` as a feed |
+| `work/dashboard.html` | no | the live ops console: gauges, spend, alerts; click a task or session card for a rendered chat transcript with expandable tool input/output |
 
 To watch a live worker without attaching a TUI:
 

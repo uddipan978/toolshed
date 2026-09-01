@@ -106,7 +106,7 @@ with concrete problems when they do not—never a generic failure.
     ├── memory.md                 read this first; **Gate** must match `--check-memory`
     ├── sessions/<name>/          brief, progress, status, stream, handovers
     ├── research/  screenshots/  errors/
-    └── dashboard.html            live ops console — session gauges, spend, alerts
+    └── dashboard.html            live ops console — gauges, alerts, agent transcripts
 ```
 
 Four views of the same data, because no one format reaches everyone:
@@ -116,7 +116,7 @@ Four views of the same data, because no one format reaches everyone:
 | `STATUS.md` | yes | anyone — repo browser, editor, Obsidian |
 | `board.html` | yes | a teammate who cloned; visual, no plugin |
 | `board.md` | yes | you, in Obsidian — drag-and-drop |
-| `work/dashboard.html` | no | the live run: session gauges, spend, alerts; click a card to read `stream.jsonl` |
+| `work/dashboard.html` | no | the live run: gauges, spend, alerts; click a card for a rendered chat transcript with expandable tool input/output |
 
 A `board.md` wikilink renders as literal text on GitHub, and a repo browser shows HTML
 as source — which is why `STATUS.md` is the default. `board.html` is deliberately

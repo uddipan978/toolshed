@@ -6,13 +6,15 @@
 Dark-first agent-ops console. No external assets, no network, no build step.
 Every stat and every badge is computed from real run data — nothing here is
 decorative, because a dashboard that congratulates you for nothing is noise.
-Live dashboard: click a session or in-flight card to read stream.jsonl as a feed.
+Live dashboard: click a session or in-flight card to read stream.jsonl as a
+chat transcript with rendered Markdown and expandable tool/code viewers.
 `--watch N` rewrites the file every N seconds so a browser refresh stays current.
 """
 from __future__ import annotations
 
 import argparse
 import html
+import re
 import subprocess
 import sys
 import time
@@ -123,10 +125,10 @@ h2::after{content:"";flex:1;height:1px;background:var(--line)}
   color:var(--dim);font-variant-numeric:tabular-nums}
 .card{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;
   margin-bottom:7px;min-width:0}
-.card[data-session],.sc[data-session]{cursor:pointer}
-.card[data-session]:hover,.sc[data-session]:hover{
+.card[data-open-session],.sc[data-open-session]{cursor:pointer}
+.card[data-open-session]:hover,.sc[data-open-session]:hover{
   border-color:color-mix(in srgb,var(--info) 45%,var(--line))}
-.card[data-session]:focus-visible,.sc[data-session]:focus-visible{
+.card[data-open-session]:focus-visible,.sc[data-open-session]:focus-visible{
   outline:2px solid var(--info);outline-offset:2px}
 .card .cid{font:11px/1.3 var(--mono);color:var(--info);letter-spacing:.02em}
 .card .ct{font:13px/1.4 var(--sans);margin-top:3px;overflow-wrap:anywhere}
@@ -185,39 +187,154 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);
   color:var(--faint);font:11px/1.7 var(--mono)}
 code{font-family:var(--mono);color:var(--dim)}
 
-/* ── session feed (stream.jsonl) ──────────────────────────── */
+/* ── session transcript (stream.jsonl) ────────────────────── */
+body.feed-lock{overflow:hidden}
 .feed{position:fixed;inset:0;z-index:20;pointer-events:none}
 .feed.open{pointer-events:auto}
-.feed-scrim{position:absolute;inset:0;background:rgba(6,8,12,.55);opacity:0;transition:opacity .15s}
+.feed-scrim{position:absolute;inset:0;background:rgba(3,5,8,.60);opacity:0;
+  backdrop-filter:blur(2px);transition:opacity .18s ease}
 .feed.open .feed-scrim{opacity:1}
-.feed-pane{position:absolute;top:0;right:0;bottom:0;width:min(560px,100%);background:var(--bg);
-  border-left:1px solid var(--line);transform:translateX(100%);transition:transform .18s;
-  display:flex;flex-direction:column;box-shadow:-24px 0 48px rgba(0,0,0,.28)}
+.feed-pane{position:absolute;top:0;right:0;bottom:0;width:min(860px,100%);background:var(--bg);
+  border-left:1px solid var(--line2);transform:translateX(100%);transition:transform .2s ease;
+  display:flex;flex-direction:column;box-shadow:-30px 0 70px rgba(0,0,0,.38)}
 .feed.open .feed-pane{transform:none}
-.feed-pane header{display:flex;align-items:center;justify-content:space-between;gap:12px;
-  padding:16px 18px 10px;border-bottom:1px solid var(--line)}
-.feed-pane h3{margin:0;font:650 15px/1.2 var(--sans);letter-spacing:-.02em;overflow-wrap:anywhere}
-.feed-x{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:8px;
-  padding:5px 9px;font:11px/1 var(--mono);cursor:pointer}
-.feed-x:hover{color:var(--ink);border-color:var(--line2)}
-.feed-note{margin:0;padding:8px 18px;font:11px/1.45 var(--mono);color:var(--faint);
-  border-bottom:1px solid var(--line)}
-.feed-body{flex:1;overflow:auto;padding:12px 16px 28px}
+.feed-pane>header{display:flex;align-items:center;justify-content:space-between;gap:18px;
+  padding:15px 18px;background:color-mix(in srgb,var(--bg) 94%,transparent);
+  border-bottom:1px solid var(--line);flex:0 0 auto}
+.feed-heading{min-width:0}
+.feed-eyebrow{display:block;font:600 9.5px/1.2 var(--mono);letter-spacing:.12em;
+  text-transform:uppercase;color:var(--info);margin-bottom:4px}
+.feed-pane h3{margin:0;font:650 16px/1.25 var(--sans);letter-spacing:-.02em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.feed-meta{font:10.5px/1.45 var(--mono);color:var(--dim);margin-top:4px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.feed-actions{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+.feed-btn{min-height:44px;background:transparent;border:1px solid var(--line);color:var(--dim);
+  border-radius:9px;padding:0 11px;font:11px/1 var(--mono);cursor:pointer;white-space:nowrap;
+  touch-action:manipulation}
+.feed-btn:hover{color:var(--ink);border-color:var(--line2);background:var(--panel)}
+.feed-btn:active{background:var(--panel2)}
+.feed-btn:focus-visible,.code-action:focus-visible,.tool-summary:focus-visible{
+  outline:2px solid var(--info);outline-offset:2px}
+.feed-note{margin:0;padding:7px 18px;font:10.5px/1.45 var(--mono);color:var(--dim);
+  background:var(--bg2);border-bottom:1px solid var(--line);flex:0 0 auto}
+.feed-body{flex:1;overflow:auto;overscroll-behavior:contain;padding:24px 24px 42px;
+  scroll-behavior:smooth}
+.feed-panel{max-width:780px;margin:0 auto}
 .feed-list{list-style:none;margin:0;padding:0}
-.fi{margin:0 0 12px;padding:10px 11px;background:var(--panel);border:1px solid var(--line);
-  border-radius:10px}
-.fi-k{font:10px/1.3 var(--mono);text-transform:uppercase;letter-spacing:.1em;color:var(--faint)}
-.fi-t{font:12.5px/1.4 var(--sans);margin-top:4px;overflow-wrap:anywhere}
-.fi-d{margin:8px 0 0;padding:8px 9px;background:var(--bg2);border-radius:7px;
-  font:11px/1.45 var(--mono);color:var(--dim);white-space:pre-wrap;overflow-wrap:anywhere;
-  max-height:280px;overflow:auto}
-.fi.tool .fi-k{color:var(--info)}
-.fi.ok{border-color:color-mix(in srgb,var(--live) 35%,var(--line))}
-.fi.ok .fi-k{color:var(--live)}
-.fi.bad{border-color:color-mix(in srgb,var(--bad) 45%,var(--line))}
-.fi.bad .fi-k{color:var(--bad)}
-.fi.result .fi-k{color:var(--xp)}
-.fi.text .fi-t,.fi.text .fi-d{color:var(--ink)}
+
+/* Transcript rhythm: assistant messages read as prose; tool calls recede until opened. */
+.chat-row{display:grid;grid-template-columns:32px minmax(0,1fr);gap:11px;position:relative;
+  margin:0 0 18px}
+.chat-row::before{content:"";position:absolute;top:32px;bottom:-18px;left:15px;width:1px;
+  background:var(--line)}
+.chat-row:last-child::before{display:none}
+.chat-avatar{position:relative;z-index:1;width:32px;height:32px;border-radius:9px;
+  display:grid;place-items:center;background:var(--panel2);border:1px solid var(--line2);
+  color:var(--ink);font:650 11px/1 var(--mono)}
+.chat-main{min-width:0}
+.chat-label{font:600 10px/1.3 var(--mono);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--dim);margin:1px 0 6px}
+.message-bubble{background:var(--panel);border:1px solid var(--line);border-radius:4px 12px 12px 12px;
+  padding:14px 16px;box-shadow:0 6px 22px rgba(0,0,0,.08)}
+
+/* Safe, server-rendered Markdown. Raw HTML is always escaped by the renderer. */
+.md{font:14px/1.68 var(--sans);color:var(--ink);overflow-wrap:anywhere}
+.md>:first-child{margin-top:0}.md>:last-child{margin-bottom:0}
+.md p{margin:0 0 11px}.md h1,.md h2,.md h3,.md h4,.md h5,.md h6{
+  color:var(--ink);font-family:var(--sans);font-weight:650;line-height:1.3;
+  text-transform:none;letter-spacing:-.015em;
+  display:block;margin:19px 0 8px}.md h1::after,.md h2::after{display:none}
+.md h1{font-size:20px}.md h2{font-size:17px}.md h3{font-size:15px}.md h4,.md h5,.md h6{font-size:14px}
+.md ul,.md ol{margin:8px 0 12px;padding-left:24px}.md li{margin:4px 0;padding-left:2px}
+.md li::marker{color:var(--faint)}
+.md blockquote{margin:12px 0;padding:2px 0 2px 13px;border-left:3px solid var(--info);
+  color:var(--dim)}
+.md a{color:var(--info);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--info) 45%,transparent)}
+.md a:hover{border-color:var(--info)}
+.md code.md-inline{padding:2px 5px;border:1px solid var(--line);border-radius:5px;
+  background:var(--bg2);color:var(--ink);font-size:.88em}
+.md hr{height:1px;border:0;background:var(--line);margin:17px 0}
+.md-table-wrap{overflow:auto;margin:12px 0;border:1px solid var(--line);border-radius:9px}
+.md table{border:0;border-radius:0;background:transparent;min-width:100%}
+.md th,.md td{padding:8px 10px;font-size:12.5px;vertical-align:top}
+.md th{font-size:9.5px}.md-url{color:var(--faint);font-family:var(--mono);font-size:.9em}
+.md-task{list-style:none;margin-left:-20px}.md-check{display:inline-block;width:16px;color:var(--faint)}
+.md-check.on{color:var(--live)}
+
+/* Tool calls and code/script viewers. */
+.chat-row.tool-event .chat-avatar{color:var(--info);background:color-mix(in srgb,var(--info) 9%,var(--panel2))}
+.tool-card{background:var(--panel);border:1px solid var(--line);border-radius:11px;overflow:hidden}
+.tool-card[open]{border-color:var(--line2)}
+.tool-card.bad{border-color:color-mix(in srgb,var(--bad) 48%,var(--line))}
+.tool-summary{min-height:52px;display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;
+  align-items:center;gap:10px;padding:8px 12px;cursor:pointer;list-style:none;user-select:none;
+  touch-action:manipulation}
+.tool-summary::-webkit-details-marker{display:none}
+.tool-summary:active{background:var(--panel2)}
+.tool-glyph{width:27px;height:27px;border-radius:7px;display:grid;place-items:center;
+  color:var(--info);background:color-mix(in srgb,var(--info) 10%,var(--bg2));
+  font:650 10px/1 var(--mono)}
+.tool-copy{min-width:0;display:flex;align-items:baseline;gap:7px}.tool-name{font:650 10px/1.3 var(--mono);letter-spacing:.08em;
+  text-transform:uppercase;color:var(--info)}
+.tool-title{font:12.5px/1.4 var(--sans);color:var(--ink);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;margin-top:2px;min-width:0}
+.tool-state{display:flex;align-items:center;gap:6px;color:var(--faint);font:10px/1 var(--mono)}
+.tool-state::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--faint)}
+.tool-card.ok .tool-state::before{background:var(--live)}
+.tool-card.ok .tool-state{color:var(--live)}
+.tool-card.bad .tool-state::before{background:var(--bad)}
+.tool-card.bad .tool-state{color:var(--bad)}
+.tool-summary::after{content:"›";color:var(--faint);font:18px/1 var(--mono);transition:transform .15s}
+.tool-card[open]>.tool-summary::after{transform:rotate(90deg)}
+.tool-body{border-top:1px solid var(--line);padding:10px;background:var(--bg2);display:grid;gap:10px}
+.code-viewer{min-width:0;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:#080b10}
+:root[data-theme="light"] .code-viewer{background:#f3f6fa}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .code-viewer{background:#f3f6fa}}
+.code-head{min-height:38px;display:flex;align-items:center;gap:8px;padding:0 8px 0 11px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+.code-label{font:600 9.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.1em;color:var(--dim)}
+.code-lang{font:9.5px/1 var(--mono);color:var(--dim)}
+.code-actions{margin-left:auto;display:flex;gap:3px}
+.code-action{min-height:44px;border:0;background:transparent;color:var(--dim);border-radius:6px;
+  padding:0 8px;font:9.5px/1 var(--mono);cursor:pointer;touch-action:manipulation}
+.code-action:hover{color:var(--ink);background:var(--panel2)}
+.code-action:active{background:var(--line)}
+.code-viewer pre{margin:0;padding:12px 0;max-height:390px;overflow:auto;tab-size:2;
+  font:11.5px/1.58 var(--mono);color:var(--ink);white-space:pre}
+.code-viewer code{display:block;min-width:max-content;color:inherit;font:inherit}
+.code-viewer.wrap-code pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.code-viewer.wrap-code code{min-width:0}
+.code-line{display:block;min-height:1.58em;padding:0 14px 0 52px;position:relative}
+.code-line::before{counter-increment:line;content:counter(line);position:absolute;left:0;width:38px;
+  padding-right:10px;text-align:right;color:var(--faint);border-right:1px solid var(--line);user-select:none}
+.code-viewer pre{counter-reset:line}
+.code-viewer.terminal pre{padding:12px 14px;color:#b9c7d8}
+:root[data-theme="light"] .code-viewer.terminal pre{color:#263446}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .code-viewer.terminal pre{color:#263446}}
+.code-viewer.terminal code{min-width:max-content}
+.md>.code-viewer{margin:13px 0}
+
+.event-line{display:flex;align-items:flex-start;gap:9px;margin:12px 0 18px 43px;padding:9px 11px;
+  border:1px dashed var(--line2);border-radius:9px;color:var(--dim);font:11px/1.5 var(--mono)}
+.event-mark{width:7px;height:7px;margin:5px 3px 0 1px;background:var(--warn);transform:rotate(45deg);
+  flex:0 0 auto}
+.result-event .chat-avatar{color:var(--xp);background:color-mix(in srgb,var(--xp) 9%,var(--panel2))}
+.result-card{padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.result-card.ok{border-color:color-mix(in srgb,var(--live) 34%,var(--line))}
+.result-card.bad{border-color:color-mix(in srgb,var(--bad) 44%,var(--line))}
+.result-title{font:600 11px/1.4 var(--mono);color:var(--dim)}
+.result-card.ok .result-title{color:var(--live)}.result-card.bad .result-title{color:var(--bad)}
+.result-card .md{margin-top:8px;font-size:12.5px;color:var(--dim)}
+
+@media (max-width:700px){
+  .feed-pane{width:100%;border-left:0}.feed-pane>header{padding:11px 12px;gap:10px}
+  .feed-actions .tools-toggle{display:none}.feed-btn{min-width:44px;padding:0 9px}
+  .feed-body{padding:18px 12px 32px}.chat-row{grid-template-columns:28px minmax(0,1fr);gap:8px}
+  .chat-avatar{width:28px;height:28px}.chat-row::before{left:13px;top:28px}
+  .message-bubble{padding:12px}.event-line{margin-left:36px}.tool-state span{display:none}
+}
+@media (prefers-reduced-motion:reduce){.feed-scrim,.feed-pane,.tool-summary::after{transition:none}.feed-body{scroll-behavior:auto}}
 """
 
 JS = r"""
@@ -225,50 +342,153 @@ JS = r"""
   var feed = document.getElementById("feed");
   if (!feed) return;
   var title = document.getElementById("feed-title");
+  var meta = document.getElementById("feed-meta");
   var empty = document.getElementById("feed-empty");
+  var body = feed.querySelector(".feed-body");
+  var closeButton = feed.querySelector("button[data-close-feed]");
+  var toolsButton = feed.querySelector("[data-toggle-tools]");
+  var currentPanel = null;
+  var lastFocus = null;
+
+  function updateToolsButton(){
+    if (!toolsButton || !currentPanel) return;
+    var tools = currentPanel.querySelectorAll("details.tool-card");
+    toolsButton.hidden = tools.length === 0;
+    if (!tools.length) return;
+    var allOpen = true;
+    for (var i = 0; i < tools.length; i++) if (!tools[i].open) allOpen = false;
+    toolsButton.textContent = allOpen ? "Collapse tools" : "Expand tools";
+  }
+
   function openSession(name){
     if (!name) return;
     var panels = document.querySelectorAll(".feed-panel");
-    var found = false;
+    currentPanel = null;
     for (var i = 0; i < panels.length; i++) {
       var on = panels[i].getAttribute("data-session") === name;
       panels[i].hidden = !on;
-      if (on) found = true;
+      if (on) currentPanel = panels[i];
     }
-    title.textContent = name;
-    empty.hidden = found;
+    lastFocus = document.activeElement;
+    title.textContent = currentPanel ? (currentPanel.getAttribute("data-title") || name) : name;
+    meta.textContent = currentPanel ? (currentPanel.getAttribute("data-summary") || "") : "";
+    empty.hidden = !!currentPanel;
     feed.classList.add("open");
     feed.setAttribute("aria-hidden", "false");
+    feed.removeAttribute("inert");
+    document.body.classList.add("feed-lock");
+    updateToolsButton();
+    requestAnimationFrame(function(){
+      if (body) {
+        var live = currentPanel && currentPanel.getAttribute("data-live") === "true";
+        body.scrollTop = live ? body.scrollHeight : 0;
+      }
+      if (closeButton) closeButton.focus({preventScroll:true});
+    });
     try { history.replaceState(null, "", "#session=" + encodeURIComponent(name)); }
     catch (e) {}
   }
   function close(){
     feed.classList.remove("open");
     feed.setAttribute("aria-hidden", "true");
+    feed.setAttribute("inert", "");
+    document.body.classList.remove("feed-lock");
     try {
       if (location.hash.indexOf("#session=") === 0)
         history.replaceState(null, "", location.pathname + location.search);
     } catch (e) {}
+    if (lastFocus && lastFocus.focus) lastFocus.focus({preventScroll:true});
   }
+
+  function copyText(value, button){
+    function done(){
+      var old = button.textContent;
+      button.textContent = "Copied";
+      setTimeout(function(){ button.textContent = old; }, 1200);
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(value).then(done, function(){ fallback(); });
+      return;
+    }
+    fallback();
+    function fallback(){
+      var area = document.createElement("textarea");
+      area.value = value; area.setAttribute("readonly", "");
+      area.style.position = "fixed"; area.style.opacity = "0";
+      document.body.appendChild(area); area.select();
+      try { document.execCommand("copy"); done(); } catch (e) {}
+      document.body.removeChild(area);
+    }
+  }
+
   document.addEventListener("click", function(e){
     var closeHit = e.target.closest("[data-close-feed]");
     if (closeHit) { close(); return; }
-    var hit = e.target.closest("[data-session]");
+    var copy = e.target.closest("[data-copy-code]");
+    if (copy) {
+      var viewer = copy.closest(".code-viewer");
+      var code = viewer && viewer.querySelector("code");
+      if (code) {
+        var lines = code.querySelectorAll(".code-line");
+        var value = code.textContent;
+        if (lines.length) {
+          var values = [];
+          for (var i = 0; i < lines.length; i++) values.push(lines[i].textContent);
+          value = values.join("\n");
+        }
+        copyText(value.replace(/\n$/, ""), copy);
+      }
+      return;
+    }
+    var wrap = e.target.closest("[data-wrap-code]");
+    if (wrap) {
+      var wrapViewer = wrap.closest(".code-viewer");
+      var on = wrapViewer.classList.toggle("wrap-code");
+      wrap.setAttribute("aria-pressed", on ? "true" : "false");
+      wrap.textContent = on ? "Unwrap" : "Wrap";
+      return;
+    }
+    var latest = e.target.closest("[data-feed-latest]");
+    if (latest) { if (body) body.scrollTop = body.scrollHeight; return; }
+    var toggleTools = e.target.closest("[data-toggle-tools]");
+    if (toggleTools && currentPanel) {
+      var tools = currentPanel.querySelectorAll("details.tool-card");
+      var open = false;
+      for (var j = 0; j < tools.length; j++) if (!tools[j].open) open = true;
+      for (var k = 0; k < tools.length; k++) tools[k].open = open;
+      updateToolsButton();
+      return;
+    }
+    var hit = e.target.closest("[data-open-session]");
     if (hit) {
-      var name = hit.getAttribute("data-session");
+      var name = hit.getAttribute("data-open-session");
       if (name) { e.preventDefault(); openSession(name); }
     }
   });
   document.addEventListener("keydown", function(e){
-    if (e.key === "Escape") close();
+    if (e.key === "Escape" && feed.classList.contains("open")) { close(); return; }
+    if (e.key === "Tab" && feed.classList.contains("open")) {
+      var candidates = feed.querySelectorAll('button:not([hidden]),summary,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])');
+      var focusable = [];
+      for (var f = 0; f < candidates.length; f++) {
+        if (!candidates[f].closest("[hidden]") && candidates[f].offsetParent !== null)
+          focusable.push(candidates[f]);
+      }
+      if (focusable.length) {
+        var first = focusable[0], last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    }
     if (e.key === "Enter" || e.key === " ") {
       var el = document.activeElement;
-      if (el && el.getAttribute && el.getAttribute("data-session")) {
+      if (el && el.getAttribute && el.getAttribute("data-open-session")) {
         e.preventDefault();
-        openSession(el.getAttribute("data-session"));
+        openSession(el.getAttribute("data-open-session"));
       }
     }
   });
+  feed.addEventListener("toggle", updateToolsButton, true);
   var m = location.hash.match(/session=([^&]+)/);
   if (m) openSession(decodeURIComponent(m[1]));
 })();
@@ -279,26 +499,316 @@ def esc(s) -> str:
     return html.escape(str(s if s is not None else ""))
 
 
+def _safe_href(value: str) -> str | None:
+    value = html.unescape((value or "").strip())
+    if not value or re.search(r"[\x00-\x20]", value):
+        return None
+    low = value.lower()
+    if low.startswith(("https://", "http://", "mailto:", "#", "/", "./", "../")):
+        return value
+    return None
+
+
+def _inline_markdown(value: str) -> str:
+    """Render a deliberately safe Markdown inline subset.
+
+    Raw HTML is escaped. Links are restricted to web/mail/relative targets, so
+    an agent transcript cannot smuggle executable markup into the dashboard.
+    """
+    tokens: list[str] = []
+
+    def stash(markup: str) -> str:
+        key = f"\ue000{len(tokens)}\ue001"
+        tokens.append(markup)
+        return key
+
+    def code_repl(match: re.Match) -> str:
+        return stash(f'<code class="md-inline">{esc(match.group(1))}</code>')
+
+    value = re.sub(r"`([^`\n]+)`", code_repl, value)
+
+    def link_repl(match: re.Match) -> str:
+        label, target = match.group(1), match.group(2)
+        href = _safe_href(target)
+        if href is None:
+            return stash(f'{esc(label)} <span class="md-url">{esc(target)}</span>')
+        external = href.lower().startswith(("http://", "https://"))
+        attrs = ' target="_blank" rel="noopener noreferrer"' if external else ""
+        return stash(f'<a href="{esc(href)}"{attrs}>{esc(label)}</a>')
+
+    value = re.sub(r"(?<!!)\[([^\]\n]+)\]\(([^)\s]+)\)", link_repl, value)
+
+    def auto_link_repl(match: re.Match) -> str:
+        href = _safe_href(match.group(1))
+        if href is None:
+            return match.group(0)
+        return stash(
+            f'<a href="{esc(href)}" target="_blank" rel="noopener noreferrer">'
+            f'{esc(href)}</a>'
+        )
+
+    value = re.sub(r"<(https?://[^ >]+)>", auto_link_repl, value)
+    value = html.escape(value, quote=False)
+    value = re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", value)
+    value = re.sub(r"__([^_\n]+)__", r"<strong>\1</strong>", value)
+    value = re.sub(r"~~([^~\n]+)~~", r"<del>\1</del>", value)
+    value = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", value)
+    value = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"<em>\1</em>", value)
+    value = value.replace("\n", "<br>")
+    for i, markup in enumerate(tokens):
+        value = value.replace(f"\ue000{i}\ue001", markup)
+    return value
+
+
+def _code_lines(value: str) -> str:
+    lines = value.split("\n")
+    return "".join(f'<span class="code-line">{esc(line)}</span>' for line in lines)
+
+
+def render_code_view(
+    value: str,
+    label: str,
+    language: str = "",
+    *,
+    terminal: bool = False,
+) -> str:
+    language = re.sub(r"[^a-zA-Z0-9_+.#-]", "", language or "")
+    cls = "code-viewer terminal" if terminal else "code-viewer"
+    lang = f'<span class="code-lang">{esc(language)}</span>' if language else ""
+    content = esc(value) if terminal else _code_lines(value)
+    return (
+        f'<div class="{cls}" role="group" aria-label="{esc(label)} viewer"><div class="code-head">'
+        f'<span class="code-label">{esc(label)}</span>{lang}'
+        '<span class="code-actions">'
+        f'<button type="button" class="code-action" data-wrap-code aria-pressed="false" '
+        f'aria-label="Toggle line wrapping for {esc(label)}">Wrap</button>'
+        f'<button type="button" class="code-action" data-copy-code '
+        f'aria-label="Copy {esc(label)}">Copy</button>'
+        '</span></div>'
+        f'<pre><code class="language-{esc(language or "text")}">{content}</code></pre></div>'
+    )
+
+
+def _table_cells(line: str) -> list[str]:
+    line = line.strip()
+    if line.startswith("|"):
+        line = line[1:]
+    if line.endswith("|") and not line.endswith(r"\|"):
+        line = line[:-1]
+    return [c.replace(r"\|", "|").strip() for c in re.split(r"(?<!\\)\|", line)]
+
+
+def _table_delimiter(line: str) -> bool:
+    cells = _table_cells(line)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", c) for c in cells)
+
+
+def _markdown_block_start(line: str) -> bool:
+    return bool(
+        re.match(r"^ {0,3}(#{1,6})\s+", line)
+        or re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        or re.match(r"^\s*>\s?", line)
+        or re.match(r"^\s*[-+*]\s+", line)
+        or re.match(r"^\s*\d+[.)]\s+", line)
+        or re.fullmatch(r"\s{0,3}([-*_])(?:\s*\1){2,}\s*", line)
+        or line.startswith("    ")
+    )
+
+
+def render_markdown(value: str) -> str:
+    """Render common agent Markdown without external assets or raw HTML."""
+    lines = (value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out = ['<div class="md">']
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})\s*([^ ]*)\s*$", line)
+        if fence:
+            marker, language = fence.group(1), fence.group(2)
+            i += 1
+            body: list[str] = []
+            closing = re.compile(rf"^\s*{re.escape(marker[0])}{{{len(marker)},}}\s*$")
+            while i < len(lines) and not closing.match(lines[i]):
+                body.append(lines[i])
+                i += 1
+            if i < len(lines):
+                i += 1
+            out.append(render_code_view("\n".join(body), "code", language))
+            continue
+
+        if line.startswith("    "):
+            body = []
+            while i < len(lines) and (lines[i].startswith("    ") or not lines[i].strip()):
+                body.append(lines[i][4:] if lines[i].startswith("    ") else "")
+                i += 1
+            out.append(render_code_view("\n".join(body).rstrip("\n"), "code"))
+            continue
+
+        heading = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if heading:
+            level = len(heading.group(1))
+            out.append(f'<h{level}>{_inline_markdown(heading.group(2))}</h{level}>')
+            i += 1
+            continue
+
+        if re.fullmatch(r"\s{0,3}([-*_])(?:\s*\1){2,}\s*", line):
+            out.append("<hr>")
+            i += 1
+            continue
+
+        if i + 1 < len(lines) and "|" in line and _table_delimiter(lines[i + 1]):
+            headers = _table_cells(line)
+            dividers = _table_cells(lines[i + 1])
+            aligns = [
+                "center" if c.startswith(":") and c.endswith(":")
+                else "right" if c.endswith(":") else "left"
+                for c in dividers
+            ]
+            i += 2
+            rows: list[list[str]] = []
+            while i < len(lines) and lines[i].strip() and "|" in lines[i]:
+                rows.append(_table_cells(lines[i]))
+                i += 1
+            out.append('<div class="md-table-wrap"><table><thead><tr>')
+            for n, cell in enumerate(headers):
+                align = aligns[n] if n < len(aligns) else "left"
+                out.append(f'<th style="text-align:{align}">{_inline_markdown(cell)}</th>')
+            out.append("</tr></thead><tbody>")
+            for row in rows:
+                out.append("<tr>")
+                for n in range(len(headers)):
+                    cell = row[n] if n < len(row) else ""
+                    align = aligns[n] if n < len(aligns) else "left"
+                    out.append(f'<td style="text-align:{align}">{_inline_markdown(cell)}</td>')
+                out.append("</tr>")
+            out.append("</tbody></table></div>")
+            continue
+
+        if re.match(r"^\s*>\s?", line):
+            quoted: list[str] = []
+            while i < len(lines) and re.match(r"^\s*>\s?", lines[i]):
+                quoted.append(re.sub(r"^\s*>\s?", "", lines[i]))
+                i += 1
+            out.append(f'<blockquote>{render_markdown("\n".join(quoted))}</blockquote>')
+            continue
+
+        bullet = re.match(r"^\s*[-+*]\s+(.+)", line)
+        ordered = re.match(r"^\s*\d+[.)]\s+(.+)", line)
+        if bullet or ordered:
+            tag = "ul" if bullet else "ol"
+            pattern = r"^\s*[-+*]\s+(.+)" if bullet else r"^\s*\d+[.)]\s+(.+)"
+            out.append(f"<{tag}>")
+            while i < len(lines):
+                item = re.match(pattern, lines[i])
+                if not item:
+                    break
+                body = item.group(1)
+                task = re.match(r"^\[([ xX])\]\s+(.+)", body)
+                if task:
+                    on = task.group(1).lower() == "x"
+                    mark = "✓" if on else "○"
+                    out.append(
+                        f'<li class="md-task"><span class="md-check{" on" if on else ""}">'
+                        f'{mark}</span>{_inline_markdown(task.group(2))}</li>'
+                    )
+                else:
+                    out.append(f'<li>{_inline_markdown(body)}</li>')
+                i += 1
+            out.append(f"</{tag}>")
+            continue
+
+        paragraph = [line]
+        i += 1
+        while i < len(lines) and lines[i].strip():
+            if _markdown_block_start(lines[i]):
+                break
+            if i + 1 < len(lines) and "|" in lines[i] and _table_delimiter(lines[i + 1]):
+                break
+            paragraph.append(lines[i])
+            i += 1
+        out.append(f'<p>{_inline_markdown("\n".join(paragraph))}</p>')
+
+    out.append("</div>")
+    return "".join(out)
+
+
 def render_feed(events: list[dict]) -> str:
     if not events:
         return '<div class="empty">stream.jsonl has no activity yet</div>'
-    bits = ['<ol class="feed-list">']
-    labels = {"text": "said", "tool": "tool", "notice": "notice", "result": "result"}
+    bits = ['<ol class="feed-list" aria-label="Agent activity transcript">']
     for e in events:
         kind = e.get("kind") or "text"
         ok = e.get("ok")
-        cls = kind
-        if ok is True:
-            cls += " ok"
-        elif ok is False:
-            cls += " bad"
-        label = e.get("tool") if kind == "tool" and e.get("tool") else labels.get(kind, kind)
-        bits.append(f'<li class="fi {esc(cls)}"><div class="fi-k">{esc(label)}</div>')
-        if e.get("title"):
-            bits.append(f'<div class="fi-t">{esc(e["title"])}</div>')
-        if e.get("detail"):
-            bits.append(f'<pre class="fi-d">{esc(e["detail"])}</pre>')
-        bits.append("</li>")
+        state_cls = " ok" if ok is True else (" bad" if ok is False else "")
+
+        if kind == "tool":
+            tool = str(e.get("tool") or "Tool")
+            title = str(e.get("title") or "Tool call")
+            prefix = f"{tool} · "
+            if title.lower().startswith(prefix.lower()):
+                title = title[len(prefix):]
+            inp = e.get("input")
+            output = e.get("output")
+            if inp is None and output is None:
+                inp = e.get("detail") or ""
+                output = ""
+            state = "completed" if ok is True else ("failed" if ok is False else "pending")
+            opened = " open" if ok is False else ""
+            bits.append(
+                f'<li class="chat-row tool-event"><div class="chat-avatar" aria-hidden="true">&gt;_</div>'
+                f'<div class="chat-main"><div class="chat-label">Tool activity</div>'
+                f'<details class="tool-card{state_cls}"{opened}><summary class="tool-summary">'
+                f'<span class="tool-glyph" aria-hidden="true">&gt;_</span><span class="tool-copy">'
+                f'<span class="tool-name">{esc(tool)}</span><span class="tool-title">{esc(title)}</span>'
+                f'</span><span class="tool-state"><span>{esc(state)}</span></span></summary>'
+                '<div class="tool-body">'
+            )
+            if inp:
+                bits.append(render_code_view(
+                    str(inp), str(e.get("input_label") or "input"),
+                    str(e.get("language") or ""), terminal=False,
+                ))
+            if output:
+                output_language = str(e.get("output_language") or "text")
+                bits.append(render_code_view(
+                    str(output), "error output" if ok is False else "output",
+                    output_language, terminal=output_language == "terminal",
+                ))
+            if not inp and not output:
+                bits.append('<div class="empty">no captured tool input or output</div>')
+            bits.append("</div></details></div></li>")
+            continue
+
+        if kind == "notice":
+            title = e.get("title") or e.get("detail") or "session notice"
+            bits.append(
+                f'<li class="event-line" role="status"><span class="event-mark" aria-hidden="true"></span>'
+                f'<span>{esc(title)}</span></li>'
+            )
+            continue
+
+        if kind == "result":
+            bits.append(
+                f'<li class="chat-row result-event"><div class="chat-avatar" aria-hidden="true">R</div>'
+                f'<div class="chat-main"><div class="chat-label">Session result</div>'
+                f'<div class="result-card{state_cls}"><div class="result-title">'
+                f'{esc(e.get("title") or "done")}</div>'
+            )
+            if e.get("detail"):
+                bits.append(render_markdown(str(e["detail"])))
+            bits.append("</div></div></li>")
+            continue
+
+        bits.append(
+            '<li class="chat-row assistant-message"><div class="chat-avatar" aria-hidden="true">A</div>'
+            '<div class="chat-main"><div class="chat-label">Agent</div><div class="message-bubble">'
+            f'{render_markdown(str(e.get("detail") or e.get("title") or ""))}'
+            '</div></div></li>'
+        )
     bits.append("</ol>")
     return "".join(bits)
 
@@ -495,8 +1005,8 @@ def render(root: Path, static: bool = False) -> str:
                     bar = f'<div class="meter"><i style="width:{w:.0f}%"></i></div>'
                 click = ""
                 if not static and t.get("session"):
-                    click = (f' data-session="{esc(t["session"])}" tabindex="0" '
-                             'role="button" title="open worker feed"')
+                    click = (f' data-open-session="{esc(t["session"])}" tabindex="0" '
+                             'role="button" title="open agent transcript"')
                 p.append(f'<div class="card"{click}><div class="cid">{esc(t["id"])}</div>'
                          f'<div class="ct">{esc(t["title"])}</div>{bar}'
                          f'<div class="tags">{"".join(tg)}</div></div>')
@@ -536,8 +1046,8 @@ def render(root: Path, static: bool = False) -> str:
                 sess_name = esc(s.get("name"))
                 dirty = int(s.get("uncommitted_count") or 0)
                 dirty_label = f" · {dirty} uncommitted" if dirty else ""
-                p.append(f'<div class="sc{alert}" data-session="{sess_name}" tabindex="0" '
-                         f'role="button" title="open worker feed"><header><div><div class="nm">{sess_name}</div>'
+                p.append(f'<div class="sc{alert}" data-open-session="{sess_name}" tabindex="0" '
+                         f'role="button" title="open agent transcript"><header><div><div class="nm">{sess_name}</div>'
                          f'<div class="ag">{esc(s.get("agent"))} · {esc(s.get("model") or "—")}'
                          f'{esc(dirty_label)}</div></div>'
                          f'<span class="pill {esc(base)}">{esc(state)}</span></header><div class="gauges">')
@@ -584,26 +1094,45 @@ def render(root: Path, static: bool = False) -> str:
 
     p.append('<footer>task files are the source of truth · this page is derived · '
              'regenerate with <code>/foreman:board</code>'
-             + ('' if static else ' · click a session or in-flight card to watch stream.jsonl')
+             + ('' if static else ' · click a session or in-flight card to read its agent transcript')
              + '</footer></div>')
 
     if not static:
-        p.append('<div id="feed" class="feed" aria-hidden="true">')
+        p.append('<div id="feed" class="feed" aria-hidden="true" inert>')
         p.append('<div class="feed-scrim" data-close-feed></div>')
-        p.append('<aside class="feed-pane" role="dialog" aria-labelledby="feed-title">')
-        p.append('<header><h3 id="feed-title">session</h3>'
-                 '<button type="button" class="feed-x" data-close-feed>close</button></header>')
-        p.append('<p class="feed-note">from stream.jsonl · snapshot at generate time · '
-                 'regenerate the dashboard (or <code>--watch</code>) to refresh</p>')
+        p.append('<aside class="feed-pane" role="dialog" aria-modal="true" '
+                 'aria-labelledby="feed-title" aria-describedby="feed-note">')
+        p.append('<header><div class="feed-heading"><span class="feed-eyebrow">Task activity</span>'
+                 '<h3 id="feed-title">session</h3><div id="feed-meta" class="feed-meta"></div></div>'
+                 '<div class="feed-actions">'
+                 '<button type="button" class="feed-btn tools-toggle" data-toggle-tools>Expand tools</button>'
+                 '<button type="button" class="feed-btn" data-feed-latest>Latest</button>'
+                 '<button type="button" class="feed-btn" data-close-feed>Close</button>'
+                 '</div></header>')
+        p.append('<p id="feed-note" class="feed-note">Chat transcript from stream.jsonl · '
+                 'refreshes when the dashboard regenerates (or runs with <code>--watch</code>)</p>')
         p.append('<div class="feed-body">')
         p.append('<div id="feed-empty" class="empty">no captured stream for this task</div>')
         sdir = sessions_dir(root)
+        task_by_session = {t.get("session"): t for t in tasks if t.get("session")}
         for s in sessions:
             name = s.get("name")
             if not name:
                 continue
             events = parse_stream_activity(sdir / name / "stream.jsonl")
-            p.append(f'<div class="feed-panel" data-session="{esc(name)}" hidden>'
+            state = str(s.get("state") or "unknown")
+            task = task_by_session.get(name)
+            display_title = (
+                f'{task["id"]} — {task["title"]}' if task else str(name)
+            )
+            summary = " · ".join(filter(None, [
+                str(name), str(s.get("agent") or "agent"), state,
+                f'{int(s.get("turns") or 0)} turns', f'{len(events)} events',
+            ]))
+            is_live = state.split(":")[0] in ("starting", "running", "quiet")
+            p.append(f'<div class="feed-panel" data-session="{esc(name)}" '
+                     f'data-title="{esc(display_title)}" data-summary="{esc(summary)}" '
+                     f'data-live="{str(is_live).lower()}" hidden>'
                      f'{render_feed(events)}</div>')
         p.append("</div></aside></div>")
         p.append(f"<script>{JS}</script>")

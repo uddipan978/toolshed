@@ -187,6 +187,19 @@ def read_stream(path: Path) -> dict:
 MAX_ACTIVITY_EVENTS = 200
 MAX_ACTIVITY_DETAIL = 2400
 
+_CODE_LANGUAGES = {
+    ".bash": "shell", ".sh": "shell", ".zsh": "shell",
+    ".py": "python", ".pyi": "python", ".js": "javascript",
+    ".mjs": "javascript", ".cjs": "javascript", ".jsx": "jsx",
+    ".ts": "typescript", ".tsx": "tsx", ".json": "json",
+    ".md": "markdown", ".mdx": "markdown", ".html": "html",
+    ".htm": "html", ".css": "css", ".scss": "scss",
+    ".sql": "sql", ".yaml": "yaml", ".yml": "yaml",
+    ".toml": "toml", ".xml": "xml", ".rs": "rust",
+    ".go": "go", ".java": "java", ".kt": "kotlin",
+    ".swift": "swift", ".rb": "ruby", ".php": "php",
+}
+
 
 def _clip_activity(text: str, limit: int = MAX_ACTIVITY_DETAIL) -> str:
     text = text or ""
@@ -217,6 +230,67 @@ def _tool_title(name: str, inp: dict) -> str:
     return name
 
 
+def _language_for_path(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    return _CODE_LANGUAGES.get(Path(value.strip()).suffix.lower(), "")
+
+
+def _tool_input(name: str, inp: dict) -> tuple[str, str, str]:
+    """Return display text, language and label for a tool invocation.
+
+    Bash commands and file bodies deserve a code viewer. Everything else is
+    retained as formatted JSON rather than being silently reduced to one field.
+    """
+    if not isinstance(inp, dict) or not inp:
+        return "", "", "input"
+    low = (name or "").lower()
+    if low == "bash" and isinstance(inp.get("command"), str):
+        return inp["command"], "shell", "command"
+
+    path = next((inp.get(k) for k in (
+        "path", "file_path", "target_file", "file",
+    ) if inp.get(k)), "")
+    language = _language_for_path(path)
+    if low in ("write", "createfile") and isinstance(inp.get("content"), str):
+        return inp["content"], language or "text", "file contents"
+
+    try:
+        raw = json.dumps(inp, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        raw = str(inp)
+    return raw, "json", "input"
+
+
+def _tool_result_text(value: object) -> str:
+    """Flatten Messages-style tool results without losing readable text."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for block in value:
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+            if not isinstance(block, dict):
+                parts.append(str(block))
+                continue
+            text = block.get("text") or block.get("content")
+            if isinstance(text, str):
+                parts.append(text)
+            elif block.get("type") in ("image", "image_url"):
+                parts.append("[image output]")
+            else:
+                parts.append(json.dumps(block, ensure_ascii=False, indent=2))
+        return "\n".join(p for p in parts if p)
+    if isinstance(value, dict):
+        text = value.get("text") or value.get("content")
+        if isinstance(text, str):
+            return text
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    return "" if value is None else str(value)
+
+
 def _content_blocks(ev: dict) -> list:
     msg = ev.get("message")
     if isinstance(msg, dict):
@@ -237,7 +311,9 @@ def parse_stream_activity(
 ) -> list[dict]:
     """Turn stream.jsonl into a UI feed. Drops init `system` frames.
 
-    Each item: kind (text|tool|notice|result), tool, title, detail, ok.
+    Each item: kind (text|tool|notice|result), tool, title, detail, ok. Tool
+    items additionally keep input/output/language fields so the dashboard can
+    render an actual command/code viewer. ``detail`` remains for compatibility.
     """
     events: list[dict] = []
     pending: dict[str, int] = {}
@@ -281,13 +357,15 @@ def parse_stream_activity(
                     name = str(block.get("name") or "tool")
                     inp = block.get("input") if isinstance(block.get("input"), dict) else {}
                     tid = str(block.get("id") or "")
-                    detail = inp.get("command") or inp.get("content") or ""
-                    if not isinstance(detail, str):
-                        detail = json.dumps(inp, ensure_ascii=False)[:max_detail]
+                    detail, language, input_label = _tool_input(name, inp)
                     item = {
                         "kind": "tool", "tool": name,
                         "title": _tool_title(name, inp),
                         "detail": _clip_activity(str(detail), max_detail),
+                        "input": _clip_activity(str(detail), max_detail),
+                        "output": "", "language": language,
+                        "output_language": "terminal" if name.lower() == "bash" else "text",
+                        "input_label": input_label,
                         "ok": None,
                     }
                     if tid:
@@ -299,15 +377,14 @@ def parse_stream_activity(
                 if block.get("type") != "tool_result":
                     continue
                 tid = str(block.get("tool_use_id") or "")
-                body = block.get("content")
-                if not isinstance(body, str):
-                    body = json.dumps(body, ensure_ascii=False) if body else ""
+                body = _tool_result_text(block.get("content"))
                 ok = not bool(block.get("is_error"))
-                idx = pending.get(tid)
+                idx = pending.pop(tid, None)
                 clipped = _clip_activity(body, max_detail)
                 if idx is not None and 0 <= idx < len(events):
                     events[idx]["ok"] = ok
-                    prev = events[idx].get("detail") or ""
+                    events[idx]["output"] = clipped
+                    prev = events[idx].get("input") or events[idx].get("detail") or ""
                     if clipped:
                         events[idx]["detail"] = (
                             (prev + "\n——\n" + clipped) if prev else clipped
@@ -318,7 +395,9 @@ def parse_stream_activity(
                 elif clipped:
                     events.append({
                         "kind": "tool", "tool": "", "title": "tool result",
-                        "detail": clipped, "ok": ok,
+                        "detail": clipped, "input": "", "output": clipped,
+                        "language": "", "output_language": "text",
+                        "input_label": "input", "ok": ok,
                     })
             continue
         if etype in ("result", "end"):

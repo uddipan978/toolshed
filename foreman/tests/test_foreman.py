@@ -46,7 +46,11 @@ from verify_gate import (  # noqa: E402
     tester_evidence_problems,
 )
 from supervise import assess  # noqa: E402
-from dashboard import render as render_dashboard  # noqa: E402
+from dashboard import (  # noqa: E402
+    render as render_dashboard,
+    render_feed,
+    render_markdown,
+)
 
 
 FIT_CRITIQUE = """# Critique
@@ -647,6 +651,77 @@ class DashboardProgressTests(unittest.TestCase):
         self.assertIn('<div class="pct">100%</div>', html)
         self.assertIn("1/1 criteria met", html)
         self.assertIn(">Shipped</div><div class=\"v\">0/1", html)
+
+
+class DashboardTranscriptTests(unittest.TestCase):
+    def test_markdown_renders_common_blocks_and_escapes_raw_html(self):
+        rendered = render_markdown(
+            "# Plan\n\n**Bold** and `code`\n\n"
+            "- [x] done\n- pending\n\n"
+            "| File | State |\n| --- | :---: |\n| app.py | ready |\n\n"
+            "```python\nprint('<unsafe>')\n```\n\n"
+            "<script>alert(1)</script> [bad](javascript:alert(1))"
+        )
+        self.assertIn("<h1>Plan</h1>", rendered)
+        self.assertIn("<strong>Bold</strong>", rendered)
+        self.assertIn('<code class="md-inline">code</code>', rendered)
+        self.assertIn('<span class="md-check on">✓</span>', rendered)
+        self.assertIn('<div class="md-table-wrap">', rendered)
+        self.assertIn('class="language-python"', rendered)
+        self.assertIn("print(&#x27;&lt;unsafe&gt;&#x27;)", rendered)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", rendered)
+        self.assertNotIn("<script>", rendered)
+        self.assertNotIn('href="javascript:', rendered)
+
+    def test_feed_is_chat_and_separates_command_from_output(self):
+        rendered = render_feed([
+            {"kind": "text", "detail": "## Update\n\nTests are **green**.", "ok": None},
+            {"kind": "tool", "tool": "Bash", "title": "Bash · run tests",
+             "input": "npm test", "output": "4 passed", "language": "shell",
+             "output_language": "terminal", "input_label": "command", "ok": True},
+            {"kind": "result", "title": "success · 2 turns", "detail": "G3 passed", "ok": True},
+        ])
+        self.assertIn('class="chat-row assistant-message"', rendered)
+        self.assertIn("<h2>Update</h2>", rendered)
+        self.assertIn("Tests are <strong>green</strong>.", rendered)
+        self.assertIn('<details class="tool-card ok">', rendered)
+        self.assertIn('<span class="code-label">command</span>', rendered)
+        self.assertIn('<span class="code-label">output</span>', rendered)
+        self.assertIn('class="code-viewer terminal"', rendered)
+        self.assertIn("npm test", rendered)
+        self.assertIn("4 passed", rendered)
+        self.assertIn('class="chat-row result-event"', rendered)
+
+    def test_live_dashboard_has_accessible_transcript_controls(self):
+        root = Path(tempfile.mkdtemp()) / ".foreman"
+        task = root / "modules" / "M01" / "tasks" / "T-01-01.md"
+        task.parent.mkdir(parents=True)
+        task.write_text(
+            "# T-01-01 — Render task transcript\n"
+            "**Module** M01 · **Status** `[~]` · **Parallel** [P]\n"
+            "**Session** dev-m01-01 · **Est** 4 turns\n\n"
+            "## Acceptance\n- [ ] WHEN opened THE SYSTEM SHALL show activity\n"
+        )
+        sdir = root / "work" / "sessions" / "dev-m01-01"
+        sdir.mkdir(parents=True)
+        (sdir / "status.json").write_text(json.dumps({
+            "name": "dev-m01-01", "agent": "foreman-developer",
+            "state": "running", "turns": 2,
+        }))
+        (sdir / "stream.jsonl").write_text(
+            '{"type":"assistant","message":{"content":['
+            '{"type":"text","text":"**Working**"}]}}\n'
+        )
+        rendered = render_dashboard(root, static=False)
+        self.assertIn('id="feed" class="feed" aria-hidden="true" inert', rendered)
+        self.assertIn('role="dialog" aria-modal="true"', rendered)
+        self.assertIn('data-open-session="dev-m01-01"', rendered)
+        self.assertIn('data-toggle-tools', rendered)
+        self.assertIn('data-feed-latest', rendered)
+        self.assertIn('data-title="T-01-01 — Render task transcript"', rendered)
+        self.assertIn('data-live="true"', rendered)
+        self.assertIn('data-summary="dev-m01-01 · foreman-developer · running · 2 turns · 1 events"', rendered)
+        self.assertIn("Chat transcript from stream.jsonl", rendered)
 
 
 class StopGateTests(unittest.TestCase):
@@ -1457,10 +1532,33 @@ class StreamActivityTests(unittest.TestCase):
         self.assertIn("run tests", feed[1]["title"])
         self.assertIn("npm test", feed[1]["detail"])
         self.assertIn("4 passed", feed[1]["detail"])
+        self.assertEqual(feed[1]["input"], "npm test")
+        self.assertEqual(feed[1]["output"], "ok\n4 passed")
+        self.assertEqual(feed[1]["language"], "shell")
+        self.assertEqual(feed[1]["output_language"], "terminal")
+        self.assertEqual(feed[1]["input_label"], "command")
         self.assertTrue(feed[1]["ok"])
         self.assertIn("success", feed[2]["title"])
         self.assertIn("$1.50", feed[2]["title"])
         self.assertTrue(feed[2]["ok"])
+
+    def test_tool_input_json_and_block_result_remain_readable(self):
+        p = Path(tempfile.mkdtemp()) / "stream.jsonl"
+        p.write_text(
+            '{"type":"assistant","message":{"content":['
+            '{"type":"tool_use","id":"t1","name":"Read",'
+            '"input":{"file_path":"src/app.py","offset":10}}]}}\n'
+            '{"type":"user","message":{"content":['
+            '{"type":"tool_result","tool_use_id":"t1","content":['
+            '{"type":"text","text":"line 10"},'
+            '{"type":"text","text":"line 11"}]}]}}\n'
+        )
+        feed = parse_stream_activity(p)
+        self.assertEqual(len(feed), 1)
+        self.assertEqual(feed[0]["language"], "json")
+        self.assertIn('"file_path": "src/app.py"', feed[0]["input"])
+        self.assertEqual(feed[0]["output"], "line 10\nline 11")
+        self.assertTrue(feed[0]["ok"])
 
     def test_missing_stream_is_empty(self):
         p = Path(tempfile.mkdtemp()) / "nope.jsonl"

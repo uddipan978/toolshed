@@ -1,6 +1,6 @@
 {
   "name": "foreman",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Drives a requirement through a full SDLC \u2014 grill, plan, critique, build, test, beta, handoff \u2014 using a manager session that spawns and supervises independent worker sessions with budgets, deadlines, stuck-detection and handover compaction.",
   "author": {
     "name": "Uddipan Dey"
