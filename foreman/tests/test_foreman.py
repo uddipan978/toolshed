@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Fixture tests for G2 schema, status tokens, and the stop gate."""
+"""Foreman gate, stream, evidence, and git-handoff regression tests."""
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -13,6 +17,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from foreman_lib import (  # noqa: E402
     MAX_G2A_ROUNDS,
     MAX_G2A_SCHEMA_RETRIES,
+    WorktreeError,
     critique_is_clear,
     critique_is_well_formed,
     critique_problems,
@@ -26,11 +31,22 @@ from foreman_lib import (  # noqa: E402
     memory_problems,
     parse_critique,
     parse_memory,
+    parse_stream_activity,
     parse_task,
+    prepare_worker_worktree,
     read_stream,
     should_spawn_critic,
+    worktree_snapshot,
 )
-from verify_gate import task_gate_problems  # noqa: E402
+from verify_gate import (  # noqa: E402
+    beta_evidence_problems,
+    session_gate_problems,
+    stop_hook,
+    task_gate_problems,
+    tester_evidence_problems,
+)
+from supervise import assess  # noqa: E402
+from dashboard import render as render_dashboard  # noqa: E402
 
 
 FIT_CRITIQUE = """# Critique
@@ -621,6 +637,18 @@ class TaskParseTests(unittest.TestCase):
         self.assertEqual(parse_task(p)["status"], "in_test")
 
 
+class DashboardProgressTests(unittest.TestCase):
+    def test_primary_progress_uses_criteria_before_post_g5_done(self):
+        root = Path(tempfile.mkdtemp()) / ".foreman"
+        task = root / "modules" / "M01" / "tasks" / "T-01-01.md"
+        task.parent.mkdir(parents=True)
+        task.write_text(TASK_DEV_T)
+        html = render_dashboard(root, static=True)
+        self.assertIn('<div class="pct">100%</div>', html)
+        self.assertIn("1/1 criteria met", html)
+        self.assertIn(">Shipped</div><div class=\"v\">0/1", html)
+
+
 class StopGateTests(unittest.TestCase):
     def _task(self, body: str) -> Path:
         p = Path(tempfile.mkdtemp()) / "T-01-01.md"
@@ -674,8 +702,664 @@ class StopGateTests(unittest.TestCase):
         )
         self.assertEqual(problems, [])
 
+    def test_tester_may_report_a_falsified_criterion(self):
+        p = self._task(TASK_UNCHECKED.replace(
+            "- 2026-08-26 npm test -- session → 4 passed", ""
+        ))
+        problems = task_gate_problems(
+            "foreman-tester", BRIEF.format(path=p), Path(".")
+        )
+        self.assertEqual(problems, [])
+
+    def test_session_resolves_relative_task_in_worker_cwd(self):
+        manager = Path(tempfile.mkdtemp())
+        worker = Path(tempfile.mkdtemp())
+        rel = Path(".foreman/modules/M01/tasks/T-01-01.md")
+        (manager / rel).parent.mkdir(parents=True)
+        (worker / rel).parent.mkdir(parents=True)
+        (manager / rel).write_text(TASK_UNCHECKED)
+        (worker / rel).write_text(TASK_DEV_T)
+        sdir = Path(tempfile.mkdtemp())
+        (sdir / "brief.md").write_text(BRIEF.format(path=rel))
+        status = {"agent": "foreman-developer", "cwd": str(worker)}
+        problems = session_gate_problems(sdir, status)
+        self.assertEqual(problems, [])
+
+    def test_deferred_gate_with_open_problems_needs_review(self):
+        task = self._task(TASK_DEV_T)
+        sdir = Path(tempfile.mkdtemp())
+        (sdir / "brief.md").write_text(BRIEF.format(path=task))
+        (sdir / "status.json").write_text(json.dumps({
+            "name": "test-m01-01", "agent": "foreman-tester", "pid": 0,
+            "cwd": str(Path(tempfile.mkdtemp())), "gate_blocks": 3,
+            "started_at": int(time.time()),
+        }))
+        (sdir / "stream.jsonl").write_text(
+            '{"type":"result","subtype":"success"}\n'
+        )
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"FOREMAN_SESSION_DIR": str(sdir)}, clear=False):
+            self.assertEqual(stop_hook(), 0)
+        status = json.loads((sdir / "status.json").read_text())
+        self.assertTrue(status["gate_deferred"])
+        self.assertEqual(assess(sdir, time.time())["state"], "review:gate_deferred")
+
+    def test_deferred_gate_with_complete_artefacts_is_ready(self):
+        task = self._task(TASK_DEV_T)
+        sdir = Path(tempfile.mkdtemp())
+        (sdir / "brief.md").write_text(BRIEF.format(path=task))
+        (sdir / "status.json").write_text(json.dumps({
+            "name": "dev-m01-01", "agent": "foreman-developer", "pid": 0,
+            "cwd": str(task.parent), "gate_deferred": True,
+            "gate_problems": ["legacy provenance was unavailable"],
+            "started_at": int(time.time()),
+        }))
+        (sdir / "stream.jsonl").write_text(
+            '{"type":"result","subtype":"success"}\n'
+        )
+        result = assess(sdir, time.time())
+        self.assertEqual(result["completion_problems"], [])
+        self.assertEqual(result["state"], "ready:gate_deferred")
+
+
+class EvidenceGateTests(unittest.TestCase):
+    def test_tester_requires_case_and_result_files(self):
+        sdir = Path(tempfile.mkdtemp())
+        self.assertTrue(tester_evidence_problems(sdir))
+        (sdir / "testcases.md").write_text(
+            "# Cases\n\n## TC-01 — happy path\n\n**Expected** success\n"
+        )
+        self.assertTrue(tester_evidence_problems(sdir))
+
+    def test_tester_failure_is_complete_evidence(self):
+        sdir = Path(tempfile.mkdtemp())
+        (sdir / "testcases.md").write_text(
+            "# Cases\n\n## TC-01 — happy path\n\n**Expected** success\n\n"
+            "## TC-02 — malformed input\n\n**Expected** validation error\n"
+        )
+        (sdir / "results.md").write_text(
+            "# Results\n\n**Verdict** fail\n\n"
+            "## TC-01 — happy path\n**Outcome** pass\n**Evidence** command exited 0\n\n"
+            "## TC-02 — malformed input\n**Outcome** fail\n"
+            "**Evidence** expected 400, got 500\n"
+        )
+        self.assertEqual(tester_evidence_problems(sdir), [])
+
+    def test_results_cover_every_declared_case(self):
+        sdir = Path(tempfile.mkdtemp())
+        (sdir / "testcases.md").write_text(
+            "# Cases\n\n## TC-01 — one\n\n**Expected** A\n\n"
+            "## TC-02 — two\n\n**Expected** B\n"
+        )
+        (sdir / "results.md").write_text(
+            "# Results\n\n**Verdict** pass\n\n"
+            "## TC-01 — one\n**Outcome** pass\n**Evidence** A observed\n"
+        )
+        problems = tester_evidence_problems(sdir)
+        self.assertTrue(any("TC-02" in p for p in problems))
+
+    def test_beta_requires_structured_review(self):
+        sdir = Path(tempfile.mkdtemp())
+        self.assertTrue(beta_evidence_problems(sdir))
+        (sdir / "beta-review.md").write_text(
+            "# Beta review\n\n**Surface** no-ui\n**Verdict** pass\n\n"
+            "## Findings\n\n- None.\n\n## What worked\n\n- Clear errors.\n"
+        )
+        self.assertEqual(beta_evidence_problems(sdir), [])
+
+    def test_beta_finding_requires_severity_place_and_fix(self):
+        sdir = Path(tempfile.mkdtemp())
+        (sdir / "beta-review.md").write_text(
+            "# Beta review\n\n**Surface** ui\n**Verdict** fail\n\n"
+            "## Findings\n\n### B-01 — vague\n\nSomething felt wrong.\n\n"
+            "## What worked\n\n- Navigation.\n"
+        )
+        problems = beta_evidence_problems(sdir)
+        self.assertTrue(any("Severity" in p for p in problems))
+        self.assertTrue(any("Place" in p for p in problems))
+        self.assertTrue(any("Fix" in p for p in problems))
+
+
+class WorktreeHandoffTests(unittest.TestCase):
+    TASK_BACKLOG = """# T-01-01 — Feature
+**Status** `[ ]`
+
+## Acceptance
+- [ ] WHEN invoked THE SYSTEM SHALL return the feature
+
+## Activity log
+"""
+    TASK_IN_PROGRESS = TASK_BACKLOG.replace("**Status** `[ ]`", "**Status** `[~]`")
+    TASK_IN_TEST = TASK_IN_PROGRESS.replace(
+        "**Status** `[~]`", "**Status** `[t]`"
+    ).replace("- [ ] WHEN", "- [x] WHEN") + "\n- verify → EXIT=0\n"
+
+    def setUp(self):
+        self.project = Path(tempfile.mkdtemp())
+        self._git("init", "-b", "master")
+        self._git("config", "user.email", "foreman-tests@example.test")
+        self._git("config", "user.name", "Foreman Tests")
+        (self.project / ".gitignore").write_text(
+            ".claude/worktrees/\n.grok/worktrees/\n"
+        )
+        self.root = self.project / ".foreman"
+        (self.root / "work" / "sessions").mkdir(parents=True)
+        (self.root / ".gitignore").write_text("work/\n")
+        (self.root / "task.md").write_text(self.TASK_BACKLOG)
+        (self.root / "log.md").write_text("# Activity log\n")
+        (self.project / "feature.txt").write_text("base\n")
+        self._git(
+            "add", ".gitignore", ".foreman/.gitignore", ".foreman/task.md",
+            ".foreman/log.md", "feature.txt",
+        )
+        self._git("commit", "-m", "base")
+
+    def _git(self, *args: str, cwd: Path | None = None) -> str:
+        p = subprocess.run(
+            ["git", "-C", str(cwd or self.project), *args],
+            check=True, capture_output=True, text=True,
+        )
+        return p.stdout.strip()
+
+    def _prepare_dev(self, name: str = "dev-m01-01") -> dict:
+        (self.root / "task.md").write_text(self.TASK_IN_PROGRESS)
+        result = prepare_worker_worktree(
+            self.project, self.root, name=name, agent="foreman-developer",
+            harness="claude",
+        )
+        self._write_status(name, result)
+        return result
+
+    def _write_status(self, name: str, result: dict, *, pid: int = 0,
+                      agent: str = "foreman-developer") -> None:
+        sdir = self.root / "work" / "sessions" / name
+        sdir.mkdir(parents=True, exist_ok=True)
+        status = {
+            "name": name, "agent": agent, "pid": pid,
+            "state": "done",
+            **{k: result[k] for k in (
+                "cwd", "branch", "base_ref", "base_commit", "start_commit",
+                "lineage_start_commit", "base_session",
+            )},
+        }
+        (sdir / "status.json").write_text(json.dumps(status))
+        (sdir / "brief.md").write_text(
+            BRIEF.format(path=".foreman/task.md")
+        )
+        if agent == "foreman-tester":
+            (sdir / "testcases.md").write_text(
+                "# Cases\n\n## TC-01 — feature\n**Expected** feature is returned\n"
+            )
+            (sdir / "results.md").write_text(
+                "# Results\n\n**Verdict** pass\n\n"
+                "## TC-01 — feature\n**Outcome** pass\n"
+                "**Evidence** command exited 0\n"
+            )
+
+    def _commit_dev_work(self, result: dict) -> str:
+        cwd = Path(result["cwd"])
+        (cwd / "feature.txt").write_text("developer version\n")
+        (cwd / ".foreman" / "task.md").write_text(self.TASK_IN_TEST)
+        self._git("add", "feature.txt", ".foreman/task.md", cwd=cwd)
+        self._git("commit", "-m", "implement task", cwd=cwd)
+        return self._git("rev-parse", "HEAD", cwd=cwd)
+
+    def test_uninferable_start_is_unknown_not_zero(self):
+        snap = worktree_snapshot(self.project)
+        self.assertIsNone(snap["commits_ahead"])
+        self.assertEqual(snap["start_commit_source"], "unknown")
+
+    def test_tester_defaults_to_committed_developer_branch(self):
+        dev = self._prepare_dev()
+        dev_tip = self._commit_dev_work(dev)
+        tester = prepare_worker_worktree(
+            self.project, self.root, name="test-m01-01", agent="foreman-tester",
+            harness="claude",
+        )
+        self.assertEqual(tester["base_ref"], "foreman/dev-m01-01")
+        self.assertEqual(tester["base_commit"], dev_tip)
+        self.assertEqual(
+            (Path(tester["cwd"]) / "feature.txt").read_text(),
+            "developer version\n",
+        )
+        self._git("merge-base", "--is-ancestor", dev_tip, tester["branch"])
+
+    def test_git_tester_cannot_bypass_handoff_with_no_worktree(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        with self.assertRaisesRegex(WorktreeError, "requires an isolated git worktree"):
+            prepare_worker_worktree(
+                self.project, self.root, name="test-m01-01",
+                agent="foreman-tester", harness="claude", use_worktree=False,
+            )
+
+    def test_root_snapshot_excludes_manager_owned_log(self):
+        (self.root / "log.md").write_text("# Activity log\n\n- manager spawn\n")
+        dev = self._prepare_dev()
+        self.assertEqual(
+            (Path(dev["cwd"]) / ".foreman" / "log.md").read_text(),
+            "# Activity log\n",
+        )
+
+    def test_dirty_predecessor_is_not_claimed_as_preserved(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        (Path(dev["cwd"]) / "lost.txt").write_text("uncommitted\n")
+        with self.assertRaisesRegex(WorktreeError, "uncommitted work"):
+            prepare_worker_worktree(
+                self.project, self.root, name="test-m01-01",
+                agent="foreman-tester", harness="claude",
+            )
+
+    def test_foreman_base_without_session_metadata_is_rejected(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        status_path = (
+            self.root / "work" / "sessions" / "dev-m01-01" / "status.json"
+        )
+        status_path.unlink()
+        with self.assertRaisesRegex(WorktreeError, "no matching session metadata"):
+            prepare_worker_worktree(
+                self.project, self.root, name="test-m01-01",
+                agent="foreman-tester", harness="claude",
+            )
+
+    def test_empty_predecessor_branch_is_rejected(self):
+        self._prepare_dev()
+        with self.assertRaisesRegex(WorktreeError, "no worker commit"):
+            prepare_worker_worktree(
+                self.project, self.root, name="test-m01-01",
+                agent="foreman-tester", harness="claude",
+            )
+
+    def test_inherited_commit_does_not_hide_empty_developer_session(self):
+        first = self._prepare_dev("dev-m01-01")
+        self._commit_dev_work(first)
+        second = prepare_worker_worktree(
+            self.project, self.root, name="dev-m01-02",
+            agent="foreman-developer", harness="claude",
+            requested_base="foreman/dev-m01-01",
+        )
+        self._write_status("dev-m01-02", second)
+        with self.assertRaisesRegex(WorktreeError, "no worker commit"):
+            prepare_worker_worktree(
+                self.project, self.root, name="test-m01-02",
+                agent="foreman-tester", harness="claude",
+            )
+
+    def test_fix_worker_may_base_on_tester_with_no_new_commit(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        tester = prepare_worker_worktree(
+            self.project, self.root, name="test-m01-01",
+            agent="foreman-tester", harness="claude",
+        )
+        self._write_status("test-m01-01", tester, agent="foreman-tester")
+        fix = prepare_worker_worktree(
+            self.project, self.root, name="dev-m01-01-fix-1",
+            agent="foreman-developer", harness="claude",
+            requested_base="foreman/test-m01-01",
+        )
+        self.assertEqual(fix["base_session"], "test-m01-01")
+        self.assertEqual(fix["base_commit"], tester["base_commit"])
+
+    def test_corrupt_predecessor_lineage_is_rejected(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        unrelated = self._git("commit-tree", "HEAD^{tree}", "-m", "unrelated")
+        status_path = (
+            self.root / "work" / "sessions" / "dev-m01-01" / "status.json"
+        )
+        status = json.loads(status_path.read_text())
+        status["lineage_start_commit"] = unrelated
+        status_path.write_text(json.dumps(status))
+        with self.assertRaisesRegex(WorktreeError, "unverifiable handoff"):
+            prepare_worker_worktree(
+                self.project, self.root, name="test-m01-01",
+                agent="foreman-tester", harness="claude",
+            )
+
+    def test_legacy_status_infers_real_worker_commit(self):
+        dev = self._prepare_dev()
+        dev_tip = self._commit_dev_work(dev)
+        sdir = self.root / "work" / "sessions" / "dev-m01-01"
+        (sdir / "status.json").write_text(json.dumps({
+            "name": "dev-m01-01", "agent": "foreman-developer", "pid": 0,
+            "cwd": dev["cwd"], "branch": dev["branch"],
+        }))
+        tester = prepare_worker_worktree(
+            self.project, self.root, name="test-m01-01", agent="foreman-tester",
+            harness="claude",
+        )
+        self.assertEqual(tester["base_commit"], dev_tip)
+
+    def test_legacy_bookkeeping_only_branch_is_rejected(self):
+        dev = self._prepare_dev()
+        sdir = self.root / "work" / "sessions" / "dev-m01-01"
+        (sdir / "status.json").write_text(json.dumps({
+            "name": "dev-m01-01", "agent": "foreman-developer", "pid": 0,
+            "cwd": dev["cwd"], "branch": dev["branch"],
+        }))
+        with self.assertRaisesRegex(WorktreeError, "no worker commit"):
+            prepare_worker_worktree(
+                self.project, self.root, name="test-m01-01",
+                agent="foreman-tester", harness="claude",
+            )
+
+    def test_live_predecessor_is_rejected(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        self._write_status("dev-m01-01", dev, pid=os.getpid())
+        with self.assertRaisesRegex(WorktreeError, "still running"):
+            prepare_worker_worktree(
+                self.project, self.root, name="test-m01-01",
+                agent="foreman-tester", harness="claude",
+            )
+
+    def test_same_name_retry_resumes_after_manager_head_moves(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        (self.root / "log.md").write_text("# Activity log\n\n- manager advanced\n")
+        self._git("add", ".foreman/log.md")
+        self._git("commit", "-m", "manager bookkeeping")
+        resumed = prepare_worker_worktree(
+            self.project, self.root, name="dev-m01-01",
+            agent="foreman-developer", harness="claude",
+        )
+        self.assertTrue(resumed["reused"])
+        self.assertEqual(resumed["cwd"], dev["cwd"])
+
+    def test_snapshot_reports_dirty_and_commits_ahead(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        cwd = Path(dev["cwd"])
+        (cwd / "probe.mjs").write_text("scratch\n")
+        snap = worktree_snapshot(cwd, dev["start_commit"])
+        self.assertEqual(snap["commits_ahead"], 1)
+        self.assertIn("probe.mjs", snap["dirty_paths"])
+
+    def test_legacy_snapshot_infers_start_and_committed_paths(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        cwd = Path(dev["cwd"])
+        snap = worktree_snapshot(cwd)
+        self.assertEqual(snap["start_commit_source"], "inferred:primary-merge-base")
+        self.assertEqual(snap["effective_start_commit"], dev["start_commit"])
+        self.assertEqual(snap["commits_ahead"], 1)
+        self.assertIn("feature.txt", snap["committed_paths"])
+        self.assertNotIn(".foreman/log.md", snap["committed_paths"])
+
+    def test_legacy_status_no_longer_reads_as_zero_commits(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        sdir = self.root / "work" / "sessions" / "dev-m01-01"
+        status = json.loads((sdir / "status.json").read_text())
+        for key in ("start_commit", "base_commit", "lineage_start_commit"):
+            status.pop(key, None)
+        self.assertEqual(session_gate_problems(sdir, status), [])
+
+    def test_legacy_status_still_detects_committed_manager_paths(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        cwd = Path(dev["cwd"])
+        (cwd / ".foreman" / "log.md").write_text(
+            "# Activity log\n\n- committed by worker\n"
+        )
+        self._git("add", ".foreman/log.md", cwd=cwd)
+        self._git("commit", "-m", "worker changed manager log", cwd=cwd)
+        sdir = self.root / "work" / "sessions" / "dev-m01-01"
+        status = json.loads((sdir / "status.json").read_text())
+        for key in ("start_commit", "base_commit", "lineage_start_commit"):
+            status.pop(key, None)
+        problems = session_gate_problems(sdir, status)
+        self.assertTrue(any("manager-owned" in problem for problem in problems))
+
+    def test_completed_worker_at_turn_cap_is_ready(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        sdir = self.root / "work" / "sessions" / "dev-m01-01"
+        status = json.loads((sdir / "status.json").read_text())
+        status.update(pid=0, started_at=int(time.time()), max_turns=10)
+        status.pop("start_commit", None)  # exercise the legacy inference path too
+        (sdir / "status.json").write_text(json.dumps(status))
+        (sdir / "stream.jsonl").write_text(
+            '{"type":"result","subtype":"error_max_turns","is_error":true}\n'
+        )
+        result = assess(sdir, time.time())
+        self.assertEqual(result["completion_problems"], [])
+        self.assertEqual(result["state"], "ready:error_max_turns")
+
+    def test_supervisor_flags_dirty_checkpoint_and_salvage(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        cwd = Path(dev["cwd"])
+        (cwd / "unfinished.ts").write_text("work\n")
+        sdir = self.root / "work" / "sessions" / "dev-m01-01"
+        status = json.loads((sdir / "status.json").read_text())
+        status.update(
+            pid=os.getpid(), max_turns=10, started_at=int(time.time()),
+            deadline_ts=int(time.time()) + 3600, budget_usd=15, compact_pct=55,
+        )
+        (sdir / "status.json").write_text(json.dumps(status))
+        (sdir / "stream.jsonl").write_text("".join(
+            '{"type":"assistant","message":{"usage":{"input_tokens":1}}}\n'
+            for _ in range(4)
+        ))
+        running = assess(sdir, time.time())
+        self.assertTrue(running["checkpoint_pressure"])
+        self.assertFalse(running["needs_salvage"])
+        status["pid"] = 0
+        (sdir / "status.json").write_text(json.dumps(status))
+        stopped = assess(sdir, time.time())
+        self.assertTrue(stopped["needs_salvage"])
+
+    def test_beta_gate_rejects_source_edits_and_commits(self):
+        beta = prepare_worker_worktree(
+            self.project, self.root, name="beta-m01",
+            agent="foreman-beta-tester", harness="claude",
+        )
+        self._write_status(
+            "beta-m01", beta, agent="foreman-beta-tester",
+        )
+        sdir = self.root / "work" / "sessions" / "beta-m01"
+        (sdir / "beta-review.md").write_text(
+            "# Beta review\n\n**Surface** no-ui\n**Verdict** pass\n\n"
+            "## Findings\n\n- None.\n\n## What worked\n\n- Clear output.\n"
+        )
+        cwd = Path(beta["cwd"])
+        (cwd / "feature.txt").write_text("beta edit\n")
+        status = json.loads((sdir / "status.json").read_text())
+        problems = session_gate_problems(sdir, status)
+        self.assertTrue(any("uncommitted" in p for p in problems))
+
+        self._git("add", "feature.txt", cwd=cwd)
+        self._git("commit", "-m", "beta must not change source", cwd=cwd)
+        problems = session_gate_problems(sdir, status)
+        self.assertTrue(any("review-only" in p for p in problems))
+
+    def _integrate(self, name: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(ROOT / "scripts" / "integrate.sh"), "--name", name,
+             "--root", str(self.root), "--base", "master"],
+            cwd=self.project, capture_output=True, text=True,
+        )
+
+    def test_integrate_refuses_dirty_worktree_without_sweeping_it(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        cwd = Path(dev["cwd"])
+        (cwd / "zz-probe1.mjs").write_text("do not ship\n")
+        result = self._integrate("dev-m01-01")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("uncommitted work", result.stdout + result.stderr)
+        self.assertTrue((cwd / "zz-probe1.mjs").exists())
+        show = subprocess.run(
+            ["git", "-C", str(self.project), "show", "master:zz-probe1.mjs"],
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(show.returncode, 0)
+
+    def test_integrate_refuses_live_worker(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        self._write_status("dev-m01-01", dev, pid=os.getpid())
+        result = self._integrate("dev-m01-01")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("still running", result.stdout + result.stderr)
+        self.assertTrue(Path(dev["cwd"]).is_dir())
+
+    def test_integrate_refuses_prelaunch_status_with_pid_zero(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        status_path = (
+            self.root / "work" / "sessions" / "dev-m01-01" / "status.json"
+        )
+        status = json.loads(status_path.read_text())
+        status.update(state="starting", pid=0)
+        status_path.write_text(json.dumps(status))
+
+        result = self._integrate("dev-m01-01")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not in a terminal state", result.stdout + result.stderr)
+        self.assertTrue(Path(dev["cwd"]).is_dir())
+
+    def test_integrate_accepts_complete_worker_stopped_at_turn_cap(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        status_path = (
+            self.root / "work" / "sessions" / "dev-m01-01" / "status.json"
+        )
+        status = json.loads(status_path.read_text())
+        status.update(state="stopped:error_max_turns", pid=0)
+        status_path.write_text(json.dumps(status))
+
+        result = self._integrate("dev-m01-01")
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("validated completed artefacts", output)
+        self.assertEqual((self.project / "feature.txt").read_text(), "developer version\n")
+
+    def test_integrate_infers_lineage_for_legacy_capped_session(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        status_path = (
+            self.root / "work" / "sessions" / "dev-m01-01" / "status.json"
+        )
+        status = json.loads(status_path.read_text())
+        status.update(state="stopped:error_max_turns", pid=0)
+        for key in ("start_commit", "base_commit", "lineage_start_commit"):
+            status.pop(key, None)
+        status_path.write_text(json.dumps(status))
+
+        result = self._integrate("dev-m01-01")
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("inferred legacy lineage start", output)
+        self.assertEqual((self.project / "feature.txt").read_text(), "developer version\n")
+
+    def test_integrate_legacy_done_checks_committed_manager_paths(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        cwd = Path(dev["cwd"])
+        (cwd / ".foreman" / "log.md").write_text(
+            "# Activity log\n\n- worker-owned mistake\n"
+        )
+        self._git("add", ".foreman/log.md", cwd=cwd)
+        self._git("commit", "-m", "worker changed manager log", cwd=cwd)
+        status_path = (
+            self.root / "work" / "sessions" / "dev-m01-01" / "status.json"
+        )
+        status = json.loads(status_path.read_text())
+        for key in ("start_commit", "base_commit", "lineage_start_commit"):
+            status.pop(key, None)
+        status_path.write_text(json.dumps(status))
+
+        result = self._integrate("dev-m01-01")
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("manager-owned", output)
+        self.assertTrue(cwd.is_dir())
+
+    def test_foreman_only_conflict_is_not_called_a_planning_error(self):
+        dev = self._prepare_dev()
+        cwd = Path(dev["cwd"])
+        (cwd / ".foreman" / "log.md").write_text(
+            "# Activity log\n\n- worker append\n"
+        )
+        self._git("add", ".foreman/log.md", cwd=cwd)
+        self._git("commit", "-m", "worker touched coordination log", cwd=cwd)
+        (self.root / "log.md").write_text(
+            "# Activity log\n\n- manager append\n"
+        )
+
+        result = self._integrate("dev-m01-01")
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bookkeeping/coordination conflict", output)
+        self.assertNotIn("planning error", output)
+        self.assertTrue(cwd.is_dir())
+
+    def test_integrate_rejects_complete_but_failing_tester_verdict(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        tester = prepare_worker_worktree(
+            self.project, self.root, name="test-m01-01",
+            agent="foreman-tester", harness="claude",
+        )
+        self._write_status("test-m01-01", tester, agent="foreman-tester")
+        results = (
+            self.root / "work" / "sessions" / "test-m01-01" / "results.md"
+        )
+        results.write_text(results.read_text().replace(
+            "**Verdict** pass", "**Verdict** fail"
+        ))
+
+        result = self._integrate("test-m01-01")
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not `pass`", output)
+        self.assertTrue(Path(tester["cwd"]).is_dir())
+        self.assertEqual((self.project / "feature.txt").read_text(), "base\n")
+
+    def test_clean_tester_branch_carries_developer_work_into_master(self):
+        dev = self._prepare_dev()
+        self._commit_dev_work(dev)
+        tester = prepare_worker_worktree(
+            self.project, self.root, name="test-m01-01", agent="foreman-tester",
+            harness="claude",
+        )
+        self._write_status(
+            "test-m01-01", tester, agent="foreman-tester",
+        )
+        (self.root / "log.md").write_text(
+            "# Activity log\n\n- manager changed while workers ran\n"
+        )
+        result = self._integrate("test-m01-01")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("command not found", result.stdout + result.stderr)
+        self.assertEqual((self.project / "feature.txt").read_text(), "developer version\n")
+        self.assertFalse(Path(tester["cwd"]).exists())
+        self.assertFalse(Path(dev["cwd"]).exists())
+        self.assertNotEqual(
+            subprocess.run(
+                ["git", "-C", str(self.project), "show-ref", "--verify", "--quiet",
+                 "refs/heads/foreman/dev-m01-01"],
+            ).returncode,
+            0,
+        )
+
 
 class HarnessTests(unittest.TestCase):
+    def test_spawn_adapters_persist_start_commit(self):
+        for harness in ("claude", "grok"):
+            source = (
+                ROOT / "scripts" / "adapters" / harness / "spawn.sh"
+            ).read_text()
+            self.assertIn('"start_commit": prep["start_commit"]', source)
+            self.assertIn(
+                '"lineage_start_commit": prep["lineage_start_commit"]', source
+            )
+
     def test_explicit_env_wins(self):
         import os
         from unittest.mock import patch
@@ -750,6 +1434,37 @@ class StreamTests(unittest.TestCase):
         s = read_stream(p)
         self.assertTrue(s["finished"])
         self.assertEqual(s["result_subtype"], "success")
+
+
+class StreamActivityTests(unittest.TestCase):
+    def test_skips_system_and_pairs_tool_output(self):
+        p = Path(tempfile.mkdtemp()) / "stream.jsonl"
+        p.write_text(
+            '{"type":"system","subtype":"init"}\n'
+            '{"type":"assistant","message":{"content":['
+            '{"type":"text","text":"Starting."},'
+            '{"type":"tool_use","id":"t1","name":"Bash",'
+            '"input":{"command":"npm test","description":"run tests"}}]}}\n'
+            '{"type":"user","message":{"content":['
+            '{"type":"tool_result","tool_use_id":"t1","content":"ok\\n4 passed"}]}}\n'
+            '{"type":"result","subtype":"success","is_error":false,'
+            '"num_turns":2,"total_cost_usd":1.5,"result":"G3 passed"}\n'
+        )
+        feed = parse_stream_activity(p)
+        kinds = [e["kind"] for e in feed]
+        self.assertEqual(kinds, ["text", "tool", "result"])
+        self.assertEqual(feed[0]["detail"], "Starting.")
+        self.assertIn("run tests", feed[1]["title"])
+        self.assertIn("npm test", feed[1]["detail"])
+        self.assertIn("4 passed", feed[1]["detail"])
+        self.assertTrue(feed[1]["ok"])
+        self.assertIn("success", feed[2]["title"])
+        self.assertIn("$1.50", feed[2]["title"])
+        self.assertTrue(feed[2]["ok"])
+
+    def test_missing_stream_is_empty(self):
+        p = Path(tempfile.mkdtemp()) / "nope.jsonl"
+        self.assertEqual(parse_stream_activity(p), [])
 
 
 if __name__ == "__main__":

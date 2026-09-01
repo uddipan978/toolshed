@@ -6,6 +6,8 @@
 Dark-first agent-ops console. No external assets, no network, no build step.
 Every stat and every badge is computed from real run data — nothing here is
 decorative, because a dashboard that congratulates you for nothing is noise.
+Live dashboard: click a session or in-flight card to read stream.jsonl as a feed.
+`--watch N` rewrites the file every N seconds so a browser refresh stays current.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from foreman_lib import (  # noqa: E402
     all_sessions, all_tasks, critique_is_clear, parse_critique,
-    sessions_dir, work_dir,
+    parse_stream_activity, sessions_dir, work_dir,
 )
 from board import LANES  # noqa: E402
 
@@ -121,6 +123,11 @@ h2::after{content:"";flex:1;height:1px;background:var(--line)}
   color:var(--dim);font-variant-numeric:tabular-nums}
 .card{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;
   margin-bottom:7px;min-width:0}
+.card[data-session],.sc[data-session]{cursor:pointer}
+.card[data-session]:hover,.sc[data-session]:hover{
+  border-color:color-mix(in srgb,var(--info) 45%,var(--line))}
+.card[data-session]:focus-visible,.sc[data-session]:focus-visible{
+  outline:2px solid var(--info);outline-offset:2px}
 .card .cid{font:11px/1.3 var(--mono);color:var(--info);letter-spacing:.02em}
 .card .ct{font:13px/1.4 var(--sans);margin-top:3px;overflow-wrap:anywhere}
 .meter{height:3px;background:var(--line);border-radius:3px;margin-top:9px;overflow:hidden}
@@ -144,7 +151,8 @@ h2::after{content:"";flex:1;height:1px;background:var(--line)}
 .pill{font:600 10px/1 var(--mono);text-transform:uppercase;letter-spacing:.09em;
   padding:4px 8px;border-radius:20px;border:1px solid var(--line2);color:var(--dim);white-space:nowrap}
 .pill.running{color:var(--live);border-color:color-mix(in srgb,var(--live) 44%,var(--line))}
-.pill.quiet,.pill.overdue{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 44%,var(--line))}
+.pill.ready{color:var(--live);border-color:color-mix(in srgb,var(--live) 44%,var(--line))}
+.pill.quiet,.pill.overdue,.pill.review{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 44%,var(--line))}
 .pill.stuck,.pill.stopped{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 50%,var(--line))}
 .gauges{display:grid;gap:9px}
 .g{display:grid;grid-template-columns:56px 1fr auto;align-items:center;gap:9px}
@@ -176,11 +184,123 @@ td.m{font-family:var(--mono);font-size:12px;color:var(--dim)}
 footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);
   color:var(--faint);font:11px/1.7 var(--mono)}
 code{font-family:var(--mono);color:var(--dim)}
+
+/* ── session feed (stream.jsonl) ──────────────────────────── */
+.feed{position:fixed;inset:0;z-index:20;pointer-events:none}
+.feed.open{pointer-events:auto}
+.feed-scrim{position:absolute;inset:0;background:rgba(6,8,12,.55);opacity:0;transition:opacity .15s}
+.feed.open .feed-scrim{opacity:1}
+.feed-pane{position:absolute;top:0;right:0;bottom:0;width:min(560px,100%);background:var(--bg);
+  border-left:1px solid var(--line);transform:translateX(100%);transition:transform .18s;
+  display:flex;flex-direction:column;box-shadow:-24px 0 48px rgba(0,0,0,.28)}
+.feed.open .feed-pane{transform:none}
+.feed-pane header{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:16px 18px 10px;border-bottom:1px solid var(--line)}
+.feed-pane h3{margin:0;font:650 15px/1.2 var(--sans);letter-spacing:-.02em;overflow-wrap:anywhere}
+.feed-x{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:8px;
+  padding:5px 9px;font:11px/1 var(--mono);cursor:pointer}
+.feed-x:hover{color:var(--ink);border-color:var(--line2)}
+.feed-note{margin:0;padding:8px 18px;font:11px/1.45 var(--mono);color:var(--faint);
+  border-bottom:1px solid var(--line)}
+.feed-body{flex:1;overflow:auto;padding:12px 16px 28px}
+.feed-list{list-style:none;margin:0;padding:0}
+.fi{margin:0 0 12px;padding:10px 11px;background:var(--panel);border:1px solid var(--line);
+  border-radius:10px}
+.fi-k{font:10px/1.3 var(--mono);text-transform:uppercase;letter-spacing:.1em;color:var(--faint)}
+.fi-t{font:12.5px/1.4 var(--sans);margin-top:4px;overflow-wrap:anywhere}
+.fi-d{margin:8px 0 0;padding:8px 9px;background:var(--bg2);border-radius:7px;
+  font:11px/1.45 var(--mono);color:var(--dim);white-space:pre-wrap;overflow-wrap:anywhere;
+  max-height:280px;overflow:auto}
+.fi.tool .fi-k{color:var(--info)}
+.fi.ok{border-color:color-mix(in srgb,var(--live) 35%,var(--line))}
+.fi.ok .fi-k{color:var(--live)}
+.fi.bad{border-color:color-mix(in srgb,var(--bad) 45%,var(--line))}
+.fi.bad .fi-k{color:var(--bad)}
+.fi.result .fi-k{color:var(--xp)}
+.fi.text .fi-t,.fi.text .fi-d{color:var(--ink)}
+"""
+
+JS = r"""
+(function(){
+  var feed = document.getElementById("feed");
+  if (!feed) return;
+  var title = document.getElementById("feed-title");
+  var empty = document.getElementById("feed-empty");
+  function openSession(name){
+    if (!name) return;
+    var panels = document.querySelectorAll(".feed-panel");
+    var found = false;
+    for (var i = 0; i < panels.length; i++) {
+      var on = panels[i].getAttribute("data-session") === name;
+      panels[i].hidden = !on;
+      if (on) found = true;
+    }
+    title.textContent = name;
+    empty.hidden = found;
+    feed.classList.add("open");
+    feed.setAttribute("aria-hidden", "false");
+    try { history.replaceState(null, "", "#session=" + encodeURIComponent(name)); }
+    catch (e) {}
+  }
+  function close(){
+    feed.classList.remove("open");
+    feed.setAttribute("aria-hidden", "true");
+    try {
+      if (location.hash.indexOf("#session=") === 0)
+        history.replaceState(null, "", location.pathname + location.search);
+    } catch (e) {}
+  }
+  document.addEventListener("click", function(e){
+    var closeHit = e.target.closest("[data-close-feed]");
+    if (closeHit) { close(); return; }
+    var hit = e.target.closest("[data-session]");
+    if (hit) {
+      var name = hit.getAttribute("data-session");
+      if (name) { e.preventDefault(); openSession(name); }
+    }
+  });
+  document.addEventListener("keydown", function(e){
+    if (e.key === "Escape") close();
+    if (e.key === "Enter" || e.key === " ") {
+      var el = document.activeElement;
+      if (el && el.getAttribute && el.getAttribute("data-session")) {
+        e.preventDefault();
+        openSession(el.getAttribute("data-session"));
+      }
+    }
+  });
+  var m = location.hash.match(/session=([^&]+)/);
+  if (m) openSession(decodeURIComponent(m[1]));
+})();
 """
 
 
 def esc(s) -> str:
     return html.escape(str(s if s is not None else ""))
+
+
+def render_feed(events: list[dict]) -> str:
+    if not events:
+        return '<div class="empty">stream.jsonl has no activity yet</div>'
+    bits = ['<ol class="feed-list">']
+    labels = {"text": "said", "tool": "tool", "notice": "notice", "result": "result"}
+    for e in events:
+        kind = e.get("kind") or "text"
+        ok = e.get("ok")
+        cls = kind
+        if ok is True:
+            cls += " ok"
+        elif ok is False:
+            cls += " bad"
+        label = e.get("tool") if kind == "tool" and e.get("tool") else labels.get(kind, kind)
+        bits.append(f'<li class="fi {esc(cls)}"><div class="fi-k">{esc(label)}</div>')
+        if e.get("title"):
+            bits.append(f'<div class="fi-t">{esc(e["title"])}</div>')
+        if e.get("detail"):
+            bits.append(f'<pre class="fi-d">{esc(e["detail"])}</pre>')
+        bits.append("</li>")
+    bits.append("</ol>")
+    return "".join(bits)
 
 
 def ring(pct: float, size: int = 62) -> str:
@@ -220,7 +340,14 @@ def compute(root: Path):
                     for s in sessions if s.get("name"))
     reworked = sum(1 for s in sessions if int(s.get("gate_blocks") or 0) > 0)
     live = [s for s in sessions if str(s.get("state", "")).startswith(("running", "quiet"))]
-    alerts = [s for s in sessions if s.get("state") in ("stuck", "overdue")]
+    alerts = [
+        s for s in sessions
+        if str(s.get("state") or "").split(":")[0] in ("stuck", "overdue", "review", "stopped")
+        or (
+            int(s.get("uncommitted_count") or 0) > 0
+            and str(s.get("state") or "").split(":")[0] in ("done", "stopped")
+        )
+    ]
 
     # XP is a real read on progress: criteria are the atoms of verified work.
     reqs = root / "REQUIREMENTS.md"
@@ -268,7 +395,18 @@ def render(root: Path, static: bool = False) -> str:
     d = compute(root)
     tasks, sessions = d["tasks"], d["sessions"]
     total, done = d["total"], d["done"]
-    pct = (100.0 * len(done) / total) if total else 0.0
+    if d["ac_total"]:
+        progress_done = d["ac_done"]
+        progress_total = d["ac_total"]
+        progress_label = "criteria met"
+    else:
+        # Before tasks have acceptance criteria, shipped tasks are the only
+        # available denominator. Once criteria exist, they are the honest read
+        # on implemented/verified work while [x] remains reserved for post-G5.
+        progress_done = len(done)
+        progress_total = total
+        progress_label = "tasks shipped"
+    pct = (100.0 * progress_done / progress_total) if progress_total else 0.0
     live_now = bool(d["live"])
 
     p = [f"<style>{CSS}</style>", '<div class="wrap">']
@@ -282,13 +420,14 @@ def render(root: Path, static: bool = False) -> str:
                 f' · {time.strftime("%Y-%m-%d %H:%M")}')
              + '</div></div>')
     p.append(f'<div class="ring">{ring(pct)}<div><div class="pct">{pct:.0f}%</div>'
-             f'<div class="lbl">{len(done)}/{total} tasks</div></div></div></div>')
+             f'<div class="lbl">{progress_done}/{progress_total} {progress_label}</div>'
+             '</div></div></div>')
 
     # stat rail
     tiles = [
         ("live" if d["ac_total"] and d["ac_done"] == d["ac_total"] else "", "Criteria met",
          f'{d["ac_done"]}/{d["ac_total"]}', "verified, not claimed"),
-        ("", "Tasks", f'{len(done)}/{total}', "shipped / planned"),
+        ("", "Shipped", f'{len(done)}/{total}', "tasks after G5 / planned"),
     ]
     if not static:
         tiles += [
@@ -298,7 +437,7 @@ def render(root: Path, static: bool = False) -> str:
             ("warn" if d["handovers"] else "", "Handovers", f'{d["handovers"]}',
              "context compactions"),
             ("bad" if d["alerts"] else "", "Alerts", f'{len(d["alerts"])}',
-             "stuck or overdue" if d["alerts"] else "all clear"),
+             "stuck, stopped, review or salvage" if d["alerts"] else "all clear"),
         ]
     p.append('<div class="rail">')
     for cls, k, v, s in tiles:
@@ -340,6 +479,10 @@ def render(root: Path, static: bool = False) -> str:
                 s = None if static else livemap.get(t["session"])
                 if s and s.get("state") in ("stuck", "overdue"):
                     tg.append(f'<span class="tag b">{esc(s["state"])}</span>')
+                if s and int(s.get("uncommitted_count") or 0) > 0:
+                    tg.append(
+                        f'<span class="tag b">{int(s.get("uncommitted_count") or 0)} uncommitted</span>'
+                    )
                 if t["session"]:
                     tg.append(f'<span class="tag">{esc(t["session"])}</span>')
                 if t["estimate"]:
@@ -350,7 +493,11 @@ def render(root: Path, static: bool = False) -> str:
                     cl = "ok" if w == 100 else ""
                     tg.insert(0, f'<span class="tag {cl}">AC {t["acceptance_done"]}/{t["acceptance_total"]}</span>')
                     bar = f'<div class="meter"><i style="width:{w:.0f}%"></i></div>'
-                p.append(f'<div class="card"><div class="cid">{esc(t["id"])}</div>'
+                click = ""
+                if not static and t.get("session"):
+                    click = (f' data-session="{esc(t["session"])}" tabindex="0" '
+                             'role="button" title="open worker feed"')
+                p.append(f'<div class="card"{click}><div class="cid">{esc(t["id"])}</div>'
                          f'<div class="ct">{esc(t["title"])}</div>{bar}'
                          f'<div class="tags">{"".join(tg)}</div></div>')
             p.append("</div>")
@@ -367,7 +514,7 @@ def render(root: Path, static: bool = False) -> str:
             for s in sessions:
                 state = str(s.get("state") or "unknown")
                 base = state.split(":")[0]
-                alert = " alert" if base in ("stuck", "overdue") else ""
+                alert = " alert" if base in ("stuck", "overdue", "review", "stopped") else ""
                 cpct = float(s.get("context_pct") or 0)
                 thr = float(s.get("compact_pct") or 55)
                 cost = float(s.get("cost_usd") or 0)
@@ -376,7 +523,7 @@ def render(root: Path, static: bool = False) -> str:
                 mt = int(s.get("max_turns") or 0)
                 dl = s.get("deadline_ts")
                 start = s.get("started_at")
-                settled = base in ("done", "stopped", "unknown")
+                settled = base in ("done", "ready", "review", "stopped", "unknown")
                 dl_txt = "—"
                 dl_pct = 0.0
                 if settled:
@@ -386,8 +533,13 @@ def render(root: Path, static: bool = False) -> str:
                     dl_pct = 100.0 * (time.time() - start) / span
                     left = int((dl - time.time()) // 60)
                     dl_txt = f"{left}m left" if left > 0 else f"{-left}m over"
-                p.append(f'<div class="sc{alert}"><header><div><div class="nm">{esc(s.get("name"))}</div>'
-                         f'<div class="ag">{esc(s.get("agent"))} · {esc(s.get("model") or "—")}</div></div>'
+                sess_name = esc(s.get("name"))
+                dirty = int(s.get("uncommitted_count") or 0)
+                dirty_label = f" · {dirty} uncommitted" if dirty else ""
+                p.append(f'<div class="sc{alert}" data-session="{sess_name}" tabindex="0" '
+                         f'role="button" title="open worker feed"><header><div><div class="nm">{sess_name}</div>'
+                         f'<div class="ag">{esc(s.get("agent"))} · {esc(s.get("model") or "—")}'
+                         f'{esc(dirty_label)}</div></div>'
                          f'<span class="pill {esc(base)}">{esc(state)}</span></header><div class="gauges">')
                 p.append(gauge("ctx", cpct, f"{cpct:.0f}% / {thr:.0f}%", threshold=thr))
                 if budget:
@@ -431,8 +583,44 @@ def render(root: Path, static: bool = False) -> str:
         p.append("</table></div>")
 
     p.append('<footer>task files are the source of truth · this page is derived · '
-             'regenerate with <code>/foreman:board</code></footer></div>')
+             'regenerate with <code>/foreman:board</code>'
+             + ('' if static else ' · click a session or in-flight card to watch stream.jsonl')
+             + '</footer></div>')
+
+    if not static:
+        p.append('<div id="feed" class="feed" aria-hidden="true">')
+        p.append('<div class="feed-scrim" data-close-feed></div>')
+        p.append('<aside class="feed-pane" role="dialog" aria-labelledby="feed-title">')
+        p.append('<header><h3 id="feed-title">session</h3>'
+                 '<button type="button" class="feed-x" data-close-feed>close</button></header>')
+        p.append('<p class="feed-note">from stream.jsonl · snapshot at generate time · '
+                 'regenerate the dashboard (or <code>--watch</code>) to refresh</p>')
+        p.append('<div class="feed-body">')
+        p.append('<div id="feed-empty" class="empty">no captured stream for this task</div>')
+        sdir = sessions_dir(root)
+        for s in sessions:
+            name = s.get("name")
+            if not name:
+                continue
+            events = parse_stream_activity(sdir / name / "stream.jsonl")
+            p.append(f'<div class="feed-panel" data-session="{esc(name)}" hidden>'
+                     f'{render_feed(events)}</div>')
+        p.append("</div></aside></div>")
+        p.append(f"<script>{JS}</script>")
+
     return "\n".join(p)
+
+
+def write_html(root: Path, out: Path, static: bool, refresh: int | None = None) -> None:
+    refresh_tag = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
+                   if refresh and not static else "")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f"{refresh_tag}"
+        f"<title>Foreman — {html.escape(root.parent.name)}</title></head><body>"
+        f"{render(root, static=static)}</body></html>\n")
 
 
 if __name__ == "__main__":
@@ -441,6 +629,8 @@ if __name__ == "__main__":
     ap.add_argument("--open", action="store_true")
     ap.add_argument("--static", action="store_true",
                     help="write the tracked board.html: no timestamp, no live session state")
+    ap.add_argument("--watch", nargs="?", const=8, type=int, metavar="SEC",
+                    help="rewrite the live dashboard every SEC seconds (default 8)")
     a = ap.parse_args()
     root = Path(a.root).resolve()
     if not root.is_dir():
@@ -448,14 +638,23 @@ if __name__ == "__main__":
 
     if a.static:
         out = root / "board.html"          # tracked, deterministic
+        write_html(root, out, static=True)
+        print(f"wrote {out}")
+        if a.open:
+            subprocess.run(["open", str(out)], check=False)
     else:
         out = work_dir(root) / "dashboard.html"   # scratchpad, live
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>Foreman — {html.escape(root.parent.name)}</title></head><body>"
-        f"{render(root, static=a.static)}</body></html>\n")
-    print(f"wrote {out}")
-    if a.open:
-        subprocess.run(["open", str(out)], check=False)
+        interval = a.watch
+        write_html(root, out, static=False, refresh=interval)
+        print(f"wrote {out}")
+        if a.open:
+            subprocess.run(["open", str(out)], check=False)
+        if interval:
+            print(f"watching every {interval}s · ctrl-c to stop", flush=True)
+            try:
+                while True:
+                    time.sleep(interval)
+                    write_html(root, out, static=False, refresh=interval)
+                    print(f"rewrote {out}", flush=True)
+            except KeyboardInterrupt:
+                print("stopped")

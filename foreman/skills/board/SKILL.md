@@ -20,7 +20,15 @@ Run all three. They are the same data for three different audiences:
 | `STATUS.md` | yes | **the default.** Plain markdown — renders in a repo browser, an editor, anywhere |
 | `board.html` | yes | a teammate who cloned and wants the visual board, no plugin needed |
 | `board.md` | yes | you, in Obsidian — drag-and-drop |
-| `work/dashboard.html` | no | the live ops console: session gauges, spend, alerts |
+| `work/dashboard.html` | no | the live ops console: session gauges, spend, alerts; click a task or session card to read that worker's `stream.jsonl` as a feed |
+
+To watch a live worker without attaching a TUI:
+
+```bash
+python3 "$PLUGIN_ROOT/scripts/dashboard.py" --root .foreman --open --watch 8
+```
+
+The page reloads from disk every 8 seconds. Click the in-flight card.
 
 All four are **derived from the task files**. Never hand-edit any of them — an edit to
 `board.md` is lost on the next regeneration, and the Obsidian plugin rewrites that file
@@ -37,6 +45,7 @@ Read the task files and the session `status.json` files, then tell the user:
 - Which gate the run is at, and what it is waiting on.
 - Tasks done / total, and anything blocked with the reason.
 - Live sessions: context %, spend against budget, time against deadline.
+- Dirty sessions: uncommitted paths, especially any stopped worker requiring `SALVAGE`.
 - Any task whose acceptance boxes are unchecked while its session reads done — that is a
   reconciliation gap, and it is the most common one.
 - Decisions that were auto-selected while the user was away.

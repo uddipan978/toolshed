@@ -3,7 +3,7 @@
 #
 #   spawn.sh --name dev-m01-03 --agent foreman-developer --brief path/to/brief.md \
 #            [--root .foreman] [--budget 15] [--turns 120] [--deadline 60] \
-#            [--model opus] [--effort high] [--worktree yes|no]
+#            [--model opus] [--effort high] [--worktree yes|no] [--base ref]
 #
 # Workers are `claude -p` processes, not `claude --bg` sessions: --max-budget-usd,
 # --max-turns and --output-format are print-mode only, and --bg refuses to combine
@@ -12,7 +12,10 @@ set -euo pipefail
 
 NAME=""; AGENT="foreman-developer"; BRIEF=""; ROOT=".foreman"
 BUDGET=15; TURNS=120; DEADLINE=60; MODEL="opus"; EFFORT="high"; WORKTREE="yes"
+BASE=""
 COMPACT_PCT="${FOREMAN_COMPACT_PCT:-55}"
+ADAPTER_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPTS_DIR="$(cd "$ADAPTER_DIR/../.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -26,6 +29,7 @@ while [[ $# -gt 0 ]]; do
     --model)    MODEL="$2"; shift 2 ;;
     --effort)   EFFORT="$2"; shift 2 ;;
     --worktree) WORKTREE="$2"; shift 2 ;;
+    --base)     BASE="$2"; shift 2 ;;
     *) echo "spawn.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -41,67 +45,26 @@ PROJECT_DIR="$(dirname "$ROOT")"
 SDIR="$ROOT/work/sessions/$NAME"
 mkdir -p "$SDIR"
 
-SESSION_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+SESSION_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 STARTED=$(date +%s)
 DEADLINE_TS=$(( STARTED + DEADLINE * 60 ))
 
-# Isolate in a worktree so a fully autonomous worker cannot damage the main
-# checkout. Created explicitly rather than via --worktree, whose interaction with
-# -p is unverified; doing it here also gives us the path deterministically.
-CWD="$PROJECT_DIR"
-BRANCH=""
-if [[ "$WORKTREE" == "yes" ]] && git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-  # A worktree is a fresh checkout of the branch, so anything uncommitted is
-  # invisible inside it. .foreman/ is almost always uncommitted at spawn time,
-  # which would hand the worker a tree with no task file. Snapshot those files
-  # onto a commit object WITHOUT moving the user's HEAD or index — a
-  # `git commit` here used to surprise-commit onto whatever branch they had
-  # checked out. Failure is fatal: a worker on a tree without the task file
-  # cannot do its job.
-  bookkeeping_commit() {
-    local project="$1" msg="$2"
-    local tmpindex tree parent head_tree
-    tmpindex="$(mktemp)"
-    if ! GIT_INDEX_FILE="$tmpindex" git -C "$project" read-tree HEAD; then
-      rm -f "$tmpindex"
-      echo "spawn.sh: cannot read HEAD — need a git repo with at least one commit" >&2
-      return 1
-    fi
-    local paths=()
-    [[ -d "$project/.foreman" ]] && paths+=(.foreman)
-    [[ -f "$project/.gitignore" ]] && paths+=(.gitignore)
-    if [[ ${#paths[@]} -gt 0 ]]; then
-      if ! GIT_INDEX_FILE="$tmpindex" git -C "$project" add -A -- "${paths[@]}"; then
-        rm -f "$tmpindex"
-        echo "spawn.sh: failed to stage .foreman for the worker snapshot" >&2
-        return 1
-      fi
-    fi
-    tree="$(GIT_INDEX_FILE="$tmpindex" git -C "$project" write-tree)" || {
-      rm -f "$tmpindex"; echo "spawn.sh: write-tree failed" >&2; return 1
-    }
-    rm -f "$tmpindex"
-    parent="$(git -C "$project" rev-parse HEAD)"
-    head_tree="$(git -C "$project" rev-parse "HEAD^{tree}")"
-    if [[ "$tree" == "$head_tree" ]]; then
-      echo "$parent"
-      return 0
-    fi
-    git -C "$project" commit-tree "$tree" -p "$parent" -m "$msg" || {
-      echo "spawn.sh: failed to write bookkeeping commit for the worker" >&2
-      return 1
-    }
-  }
-  WT="$PROJECT_DIR/.claude/worktrees/foreman-$NAME"
-  BRANCH="foreman/$NAME"
-  if [[ ! -d "$WT" ]]; then
-    mkdir -p "$(dirname "$WT")"
-    BASE="$(bookkeeping_commit "$PROJECT_DIR" "foreman: bookkeeping before spawning $NAME")" || exit 1
-    git -C "$PROJECT_DIR" worktree add -q -b "$BRANCH" "$WT" "$BASE" 2>/dev/null \
-      || git -C "$PROJECT_DIR" worktree add -q "$WT" "$BRANCH"
-  fi
-  CWD="$WT"
-fi
+# Centralised preparation keeps the Claude and Grok ancestry rules identical.
+# Testers default to foreman/dev-<same suffix> and never silently fall back to
+# project HEAD. A live, dirty, or empty predecessor is a hard launch failure.
+PREP_ARGS=(prepare --project "$PROJECT_DIR" --root "$ROOT" --name "$NAME"
+  --agent "$AGENT" --harness claude --worktree "$WORKTREE")
+[[ -n "$BASE" ]] && PREP_ARGS+=(--base "$BASE")
+python3 "$SCRIPTS_DIR/worktree.py" "${PREP_ARGS[@]}" > "$SDIR/worktree.json"
+
+json_field() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' \
+    "$SDIR/worktree.json" "$1"
+}
+CWD="$(json_field cwd)"
+BRANCH="$(json_field branch)"
+BASE_REF="$(json_field base_ref)"
+BASE_COMMIT="$(json_field base_commit)"
 
 # The manager normally writes the brief straight to its canonical path, so
 # copying it onto itself would abort the script under set -e.
@@ -121,8 +84,12 @@ Your session directory is \`$SDIR\`. Use that absolute path.
 - anything else you want the manager to see -> the same directory
 
 The project root for this task is \`$CWD\` (your own git worktree on branch
-\`$BRANCH\`). Task files, the constitution and the glossary are under
+\`$BRANCH\`). This branch was verified to contain base \`$BASE_REF\` at
+\`$BASE_COMMIT\`. Task files, the constitution and the glossary are under
 \`$CWD/.foreman/\` — read them there, and update the task file there.
+
+Before reporting done, commit task-scoped repository changes with explicit paths.
+Never use \`git add -A\`; the Stop gate rejects a dirty worktree.
 BRIEF
 fi
 
@@ -131,10 +98,36 @@ fi
 # expires after dialogExpiry.
 SETTINGS='{"crossSessionInbound":"accept"}'
 
+# The Stop hook may run before a very short worker reaches its first tool call.
+# Persist cwd/ancestry before launch so relative task paths always resolve in the
+# worker worktree, never in the manager checkout.
+python3 - "$SDIR/status.json" "$SDIR/worktree.json" "$NAME" "$AGENT" \
+  "$SESSION_ID" "$ROOT" "$STARTED" "$DEADLINE_TS" "$BUDGET" "$TURNS" \
+  "$COMPACT_PCT" <<'PY'
+import json, sys
+(out, prep_path, name, agent, session_id, root, started, deadline,
+ budget, turns, compact) = sys.argv[1:]
+prep = json.load(open(prep_path))
+status = {
+    "name": name, "agent": agent, "pid": 0, "session_id": session_id,
+    "cwd": prep["cwd"], "branch": prep["branch"], "root": root,
+    "base_ref": prep["base_ref"], "base_commit": prep["base_commit"],
+    "start_commit": prep["start_commit"],
+    "lineage_start_commit": prep["lineage_start_commit"],
+    "base_session": prep.get("base_session", ""),
+    "started_at": int(started), "deadline_ts": int(deadline),
+    "budget_usd": float(budget), "max_turns": int(turns),
+    "compact_pct": float(compact), "state": "starting", "pokes": 0,
+    "harness": "claude",
+}
+open(out, "w").write(json.dumps(status, indent=2) + "\n")
+PY
+
 cd "$CWD"
 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="$COMPACT_PCT" \
 FOREMAN_SESSION_DIR="$SDIR" \
 FOREMAN_ROOT="$ROOT" \
+FOREMAN_WORKTREE_ROOT="$CWD" \
 nohup claude -p "$(cat "$SDIR/brief.md")" \
   --output-format stream-json --verbose \
   --agent "$AGENT" \
@@ -149,23 +142,14 @@ nohup claude -p "$(cat "$SDIR/brief.md")" \
   >"$SDIR/stream.jsonl" 2>"$SDIR/stderr.log" &
 PID=$!
 
-cat > "$SDIR/status.json" <<JSON
-{
-  "name": "$NAME",
-  "agent": "$AGENT",
-  "pid": $PID,
-  "session_id": "$SESSION_ID",
-  "cwd": "$CWD",
-  "branch": "$BRANCH",
-  "started_at": $STARTED,
-  "deadline_ts": $DEADLINE_TS,
-  "budget_usd": $BUDGET,
-  "max_turns": $TURNS,
-  "compact_pct": $COMPACT_PCT,
-  "state": "running",
-  "pokes": 0,
-  "harness": "claude"
-}
-JSON
+python3 - "$SDIR/status.json" "$PID" <<'PY'
+import json, os, sys
+path, pid = sys.argv[1], int(sys.argv[2])
+data = json.load(open(path))
+data.update(pid=pid, state="running")
+tmp = path + ".tmp"
+open(tmp, "w").write(json.dumps(data, indent=2) + "\n")
+os.replace(tmp, path)
+PY
 
-echo "spawned $NAME  pid=$PID  session=$SESSION_ID  cwd=$CWD"
+echo "spawned $NAME  pid=$PID  session=$SESSION_ID  cwd=$CWD  base=$BASE_REF"

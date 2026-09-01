@@ -3,7 +3,7 @@
 #
 #   spawn.sh --name dev-m01-03 --agent foreman-developer --brief path/to/brief.md \
 #            [--root .foreman] [--budget 15] [--turns 120] [--deadline 60] \
-#            [--model grok-4.6] [--effort high] [--worktree yes|no]
+#            [--model grok-4.6] [--effort high] [--worktree yes|no] [--base ref]
 #
 # Workers are `grok -p` processes. `--output-format streaming-messages-json`
 # is the Messages-shaped stream supervise.py already knows how to read.
@@ -16,7 +16,10 @@ set -euo pipefail
 
 NAME=""; AGENT="foreman-developer"; BRIEF=""; ROOT=".foreman"
 BUDGET=15; TURNS=120; DEADLINE=60; MODEL=""; EFFORT="high"; WORKTREE="yes"
+BASE=""
 COMPACT_PCT="${FOREMAN_COMPACT_PCT:-55}"
+ADAPTER_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPTS_DIR="$(cd "$ADAPTER_DIR/../.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --model)    MODEL="$2"; shift 2 ;;
     --effort)   EFFORT="$2"; shift 2 ;;
     --worktree) WORKTREE="$2"; shift 2 ;;
+    --base)     BASE="$2"; shift 2 ;;
     *) echo "spawn.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -44,57 +48,24 @@ PROJECT_DIR="$(dirname "$ROOT")"
 SDIR="$ROOT/work/sessions/$NAME"
 mkdir -p "$SDIR"
 
-SESSION_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+SESSION_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 STARTED=$(date +%s)
 DEADLINE_TS=$(( STARTED + DEADLINE * 60 ))
 
-CWD="$PROJECT_DIR"
-BRANCH=""
-if [[ "$WORKTREE" == "yes" ]] && git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-  bookkeeping_commit() {
-    local project="$1" msg="$2"
-    local tmpindex tree parent head_tree
-    tmpindex="$(mktemp)"
-    if ! GIT_INDEX_FILE="$tmpindex" git -C "$project" read-tree HEAD; then
-      rm -f "$tmpindex"
-      echo "spawn.sh: cannot read HEAD — need a git repo with at least one commit" >&2
-      return 1
-    fi
-    local paths=()
-    [[ -d "$project/.foreman" ]] && paths+=(.foreman)
-    [[ -f "$project/.gitignore" ]] && paths+=(.gitignore)
-    if [[ ${#paths[@]} -gt 0 ]]; then
-      if ! GIT_INDEX_FILE="$tmpindex" git -C "$project" add -A -- "${paths[@]}"; then
-        rm -f "$tmpindex"
-        echo "spawn.sh: failed to stage .foreman for the worker snapshot" >&2
-        return 1
-      fi
-    fi
-    tree="$(GIT_INDEX_FILE="$tmpindex" git -C "$project" write-tree)" || {
-      rm -f "$tmpindex"; echo "spawn.sh: write-tree failed" >&2; return 1
-    }
-    rm -f "$tmpindex"
-    parent="$(git -C "$project" rev-parse HEAD)"
-    head_tree="$(git -C "$project" rev-parse "HEAD^{tree}")"
-    if [[ "$tree" == "$head_tree" ]]; then
-      echo "$parent"
-      return 0
-    fi
-    git -C "$project" commit-tree "$tree" -p "$parent" -m "$msg" || {
-      echo "spawn.sh: failed to write bookkeeping commit for the worker" >&2
-      return 1
-    }
-  }
-  WT="$PROJECT_DIR/.grok/worktrees/foreman-$NAME"
-  BRANCH="foreman/$NAME"
-  if [[ ! -d "$WT" ]]; then
-    mkdir -p "$(dirname "$WT")"
-    BASE="$(bookkeeping_commit "$PROJECT_DIR" "foreman: bookkeeping before spawning $NAME")" || exit 1
-    git -C "$PROJECT_DIR" worktree add -q -b "$BRANCH" "$WT" "$BASE" 2>/dev/null \
-      || git -C "$PROJECT_DIR" worktree add -q "$WT" "$BRANCH"
-  fi
-  CWD="$WT"
-fi
+# Centralised preparation keeps the Claude and Grok ancestry rules identical.
+PREP_ARGS=(prepare --project "$PROJECT_DIR" --root "$ROOT" --name "$NAME"
+  --agent "$AGENT" --harness grok --worktree "$WORKTREE")
+[[ -n "$BASE" ]] && PREP_ARGS+=(--base "$BASE")
+python3 "$SCRIPTS_DIR/worktree.py" "${PREP_ARGS[@]}" > "$SDIR/worktree.json"
+
+json_field() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' \
+    "$SDIR/worktree.json" "$1"
+}
+CWD="$(json_field cwd)"
+BRANCH="$(json_field branch)"
+BASE_REF="$(json_field base_ref)"
+BASE_COMMIT="$(json_field base_commit)"
 
 if [[ "$(cd "$(dirname "$BRIEF")" && pwd)/$(basename "$BRIEF")" != "$SDIR/brief.md" ]]; then
   cp "$BRIEF" "$SDIR/brief.md"
@@ -109,8 +80,12 @@ Your session directory is \`$SDIR\`. Use that absolute path.
 - anything else you want the manager to see -> the same directory
 
 The project root for this task is \`$CWD\` (your own git worktree on branch
-\`$BRANCH\`). Task files, the constitution and the glossary are under
+\`$BRANCH\`). This branch was verified to contain base \`$BASE_REF\` at
+\`$BASE_COMMIT\`. Task files, the constitution and the glossary are under
 \`$CWD/.foreman/\` — read them there, and update the task file there.
+
+Before reporting done, commit task-scoped repository changes with explicit paths.
+Never use \`git add -A\`; the Stop gate rejects a dirty worktree.
 BRIEF
 fi
 
@@ -136,32 +111,46 @@ GROK_ARGS=(
 )
 [[ -n "$MODEL" ]] && GROK_ARGS+=(--model "$MODEL")
 
+python3 - "$SDIR/status.json" "$SDIR/worktree.json" "$NAME" "$AGENT" \
+  "$SESSION_ID" "$ROOT" "$STARTED" "$DEADLINE_TS" "$BUDGET" "$TURNS" \
+  "$COMPACT_PCT" <<'PY'
+import json, sys
+(out, prep_path, name, agent, session_id, root, started, deadline,
+ budget, turns, compact) = sys.argv[1:]
+prep = json.load(open(prep_path))
+status = {
+    "name": name, "agent": agent, "pid": 0, "session_id": session_id,
+    "cwd": prep["cwd"], "branch": prep["branch"], "root": root,
+    "base_ref": prep["base_ref"], "base_commit": prep["base_commit"],
+    "start_commit": prep["start_commit"],
+    "lineage_start_commit": prep["lineage_start_commit"],
+    "base_session": prep.get("base_session", ""),
+    "started_at": int(started), "deadline_ts": int(deadline),
+    "budget_usd": float(budget), "max_turns": int(turns),
+    "compact_pct": float(compact), "state": "starting", "pokes": 0,
+    "harness": "grok",
+}
+open(out, "w").write(json.dumps(status, indent=2) + "\n")
+PY
+
 cd "$CWD"
 FOREMAN_SESSION_DIR="$SDIR" \
 FOREMAN_ROOT="$ROOT" \
+FOREMAN_WORKTREE_ROOT="$CWD" \
 FOREMAN_HARNESS=grok \
 GROK_ASK_USER_QUESTION_TIMEOUT_SECS=300 \
 nohup grok "${GROK_ARGS[@]}" \
   >"$SDIR/stream.jsonl" 2>"$SDIR/stderr.log" &
 PID=$!
 
-cat > "$SDIR/status.json" <<JSON
-{
-  "name": "$NAME",
-  "agent": "$AGENT",
-  "pid": $PID,
-  "session_id": "$SESSION_ID",
-  "cwd": "$CWD",
-  "branch": "$BRANCH",
-  "started_at": $STARTED,
-  "deadline_ts": $DEADLINE_TS,
-  "budget_usd": $BUDGET,
-  "max_turns": $TURNS,
-  "compact_pct": $COMPACT_PCT,
-  "state": "running",
-  "pokes": 0,
-  "harness": "grok"
-}
-JSON
+python3 - "$SDIR/status.json" "$PID" <<'PY'
+import json, os, sys
+path, pid = sys.argv[1], int(sys.argv[2])
+data = json.load(open(path))
+data.update(pid=pid, state="running")
+tmp = path + ".tmp"
+open(tmp, "w").write(json.dumps(data, indent=2) + "\n")
+os.replace(tmp, path)
+PY
 
-echo "spawned $NAME  pid=$PID  session=$SESSION_ID  cwd=$CWD  harness=grok"
+echo "spawned $NAME  pid=$PID  session=$SESSION_ID  cwd=$CWD  base=$BASE_REF  harness=grok"

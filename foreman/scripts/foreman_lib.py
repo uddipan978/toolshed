@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -183,12 +184,180 @@ def read_stream(path: Path) -> dict:
     return out
 
 
+MAX_ACTIVITY_EVENTS = 200
+MAX_ACTIVITY_DETAIL = 2400
+
+
+def _clip_activity(text: str, limit: int = MAX_ACTIVITY_DETAIL) -> str:
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    keep = max(200, limit // 2 - 8)
+    return text[:keep].rstrip() + "\n…\n" + text[-keep:].lstrip()
+
+
+def _tool_title(name: str, inp: dict) -> str:
+    name = name or "tool"
+    if not isinstance(inp, dict):
+        return name
+    if name in ("Bash", "bash"):
+        desc = (inp.get("description") or "").strip()
+        cmd = (inp.get("command") or "").strip().splitlines()
+        head = cmd[0] if cmd else ""
+        if desc:
+            return f"{name} · {desc}"
+        return f"{name} · {head[:140]}" if head else name
+    for key in ("path", "file_path", "target_file", "file", "url"):
+        if inp.get(key):
+            return f"{name} · {inp[key]}"
+    if inp.get("pattern"):
+        return f"{name} · {inp['pattern']}"
+    if inp.get("skill"):
+        return f"{name} · {inp['skill']}"
+    return name
+
+
+def _content_blocks(ev: dict) -> list:
+    msg = ev.get("message")
+    if isinstance(msg, dict):
+        content = msg.get("content")
+    else:
+        content = ev.get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if isinstance(content, list):
+        return [c for c in content if isinstance(c, dict)]
+    return []
+
+
+def parse_stream_activity(
+    path: Path,
+    max_events: int = MAX_ACTIVITY_EVENTS,
+    max_detail: int = MAX_ACTIVITY_DETAIL,
+) -> list[dict]:
+    """Turn stream.jsonl into a UI feed. Drops init `system` frames.
+
+    Each item: kind (text|tool|notice|result), tool, title, detail, ok.
+    """
+    events: list[dict] = []
+    pending: dict[str, int] = {}
+    if not path.exists():
+        return events
+
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return events
+
+    for line in lines:
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        etype = ev.get("type")
+        if etype == "system":
+            continue
+        if etype == "rate_limit_event":
+            events.append({
+                "kind": "notice", "tool": "", "title": "rate limited",
+                "detail": "", "ok": None,
+            })
+            continue
+        if etype == "assistant":
+            for block in _content_blocks(ev):
+                btype = block.get("type")
+                if btype == "text":
+                    text = (block.get("text") or "").strip()
+                    if text:
+                        events.append({
+                            "kind": "text", "tool": "", "title": "",
+                            "detail": _clip_activity(text, max_detail),
+                            "ok": None,
+                        })
+                elif btype == "tool_use":
+                    name = str(block.get("name") or "tool")
+                    inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+                    tid = str(block.get("id") or "")
+                    detail = inp.get("command") or inp.get("content") or ""
+                    if not isinstance(detail, str):
+                        detail = json.dumps(inp, ensure_ascii=False)[:max_detail]
+                    item = {
+                        "kind": "tool", "tool": name,
+                        "title": _tool_title(name, inp),
+                        "detail": _clip_activity(str(detail), max_detail),
+                        "ok": None,
+                    }
+                    if tid:
+                        pending[tid] = len(events)
+                    events.append(item)
+            continue
+        if etype == "user":
+            for block in _content_blocks(ev):
+                if block.get("type") != "tool_result":
+                    continue
+                tid = str(block.get("tool_use_id") or "")
+                body = block.get("content")
+                if not isinstance(body, str):
+                    body = json.dumps(body, ensure_ascii=False) if body else ""
+                ok = not bool(block.get("is_error"))
+                idx = pending.get(tid)
+                clipped = _clip_activity(body, max_detail)
+                if idx is not None and 0 <= idx < len(events):
+                    events[idx]["ok"] = ok
+                    prev = events[idx].get("detail") or ""
+                    if clipped:
+                        events[idx]["detail"] = (
+                            (prev + "\n——\n" + clipped) if prev else clipped
+                        )
+                        events[idx]["detail"] = _clip_activity(
+                            events[idx]["detail"], max_detail
+                        )
+                elif clipped:
+                    events.append({
+                        "kind": "tool", "tool": "", "title": "tool result",
+                        "detail": clipped, "ok": ok,
+                    })
+            continue
+        if etype in ("result", "end"):
+            sub = ev.get("subtype") or ev.get("stop_reason") or ev.get("stopReason") or ""
+            err = bool(ev.get("is_error"))
+            body = ev.get("result")
+            if not isinstance(body, str):
+                body = ""
+            title = sub or ("error" if err else "done")
+            extra = []
+            if isinstance(ev.get("total_cost_usd"), (int, float)):
+                extra.append(f"${ev['total_cost_usd']:.2f}")
+            if isinstance(ev.get("num_turns"), int):
+                extra.append(f"{ev['num_turns']} turns")
+            if extra:
+                title = f"{title} · {' · '.join(extra)}"
+            events.append({
+                "kind": "result", "tool": "", "title": title,
+                "detail": _clip_activity(body, max_detail),
+                "ok": not err and sub not in (
+                    "error_max_turns", "error_max_budget_usd", "error_during_execution"
+                ),
+            })
+
+    if len(events) > max_events:
+        events = events[-max_events:]
+    return events
+
+
 def pid_alive(pid: int | None) -> bool:
-    if not pid:
+    try:
+        value = int(pid or 0)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
         return False
     try:
-        os.kill(int(pid), 0)
-    except (OSError, ValueError):
+        os.kill(value, 0)
+    except OSError:
         return False
     return True
 
@@ -230,6 +399,579 @@ def run(cmd: list[str], timeout: int = 60) -> tuple[int, str, str]:
         return 124, "", f"timed out after {timeout}s"
     except FileNotFoundError:
         return 127, "", f"{cmd[0]}: not found"
+
+
+# --- worker git state ---------------------------------------------------------
+
+
+class WorktreeError(RuntimeError):
+    """A worker worktree cannot be created without risking lost or stale work."""
+
+
+MANAGER_OWNED_PATHS = frozenset({
+    ".foreman/log.md",
+    ".foreman/STATUS.md",
+    ".foreman/board.md",
+    ".foreman/board.html",
+})
+
+
+def git_status_paths(cwd: Path) -> list[str]:
+    """Changed paths in a worktree, including untracked files.
+
+    Ignored files are deliberately absent. Foreman session evidence lives outside
+    worker worktrees, so a non-empty result is product/task work that must be
+    committed explicitly before a successor or integration can safely proceed.
+    """
+    cwd = Path(cwd)
+    rc, out, _ = run(
+        ["git", "-C", str(cwd), "status", "--porcelain=v1", "-z",
+         "--untracked-files=all"],
+        timeout=20,
+    )
+    if rc != 0:
+        return []
+    paths: list[str] = []
+    parts = out.split("\0")
+    i = 0
+    while i < len(parts):
+        entry = parts[i]
+        i += 1
+        if not entry:
+            continue
+        # porcelain v1: XY<space>path. Renames have a second NUL-delimited path.
+        if len(entry) >= 4 and entry[2] == " ":
+            paths.append(entry[3:])
+            if entry[0] in "RC" or entry[1] in "RC":
+                if i < len(parts) and parts[i]:
+                    paths.append(parts[i])
+                    i += 1
+        else:
+            paths.append(entry)
+    return paths
+
+
+BOOKKEEPING_COMMIT_PREFIX = "foreman: bookkeeping before spawning"
+
+
+def _infer_worker_start(cwd: Path, base_commit: str | None = None) -> tuple[str, str]:
+    """Best-effort start for pre-0.4 sessions that did not record one.
+
+    Prefer the recorded base when available. Otherwise use the merge-base with
+    the primary checkout. In both cases, advance over Foreman's synthetic launch
+    commit so it is not mistaken for worker output or charged to committed paths.
+    Returns (commit, source); an empty commit means provenance is unknowable.
+    """
+    anchor = ""
+    source = "unknown"
+    if base_commit:
+        rc, resolved, _ = run(
+            ["git", "-C", str(cwd), "rev-parse", f"{base_commit}^{{commit}}"],
+            timeout=15,
+        )
+        if rc == 0:
+            rc, _, _ = run(
+                ["git", "-C", str(cwd), "merge-base", "--is-ancestor",
+                 resolved.strip(), "HEAD"],
+                timeout=15,
+            )
+            if rc == 0:
+                anchor = resolved.strip()
+                source = "inferred:base_commit"
+
+    if not anchor:
+        rc, raw, _ = run(
+            ["git", "-C", str(cwd), "worktree", "list", "--porcelain"],
+            timeout=20,
+        )
+        primary_head = ""
+        if rc == 0:
+            # Git lists the primary checkout first. A worker is a linked
+            # worktree, so the first different path is the manager checkout.
+            try:
+                cwd_resolved = cwd.resolve()
+            except OSError:
+                cwd_resolved = cwd
+            for record in raw.split("\n\n"):
+                path = ""
+                head = ""
+                for line in record.splitlines():
+                    if line.startswith("worktree "):
+                        path = line[len("worktree "):]
+                    elif line.startswith("HEAD "):
+                        head = line[len("HEAD "):]
+                if not path or not head:
+                    continue
+                try:
+                    same = Path(path).resolve() == cwd_resolved
+                except OSError:
+                    same = Path(path) == cwd
+                if not same:
+                    primary_head = head
+                    break
+        if primary_head:
+            rc, merged, _ = run(
+                ["git", "-C", str(cwd), "merge-base", "HEAD", primary_head],
+                timeout=15,
+            )
+            if rc == 0 and merged.strip():
+                anchor = merged.strip()
+                source = "inferred:primary-merge-base"
+
+    if not anchor:
+        return "", "unknown"
+
+    rc, raw, _ = run(
+        ["git", "-C", str(cwd), "rev-list", "--reverse", f"{anchor}..HEAD"],
+        timeout=20,
+    )
+    if rc != 0:
+        return "", "unknown"
+    effective = anchor
+    for commit in raw.splitlines():
+        rc, subject, _ = run(
+            ["git", "-C", str(cwd), "show", "-s", "--format=%s", commit],
+            timeout=15,
+        )
+        if rc == 0 and subject.startswith(BOOKKEEPING_COMMIT_PREFIX):
+            effective = commit
+            continue
+        break
+    return effective, source
+
+
+def worktree_snapshot(
+    cwd: Path,
+    start_commit: str | None = None,
+    base_commit: str | None = None,
+) -> dict:
+    """Read-only git state used by the stop gate and supervisor.
+
+    `commits_ahead=None` means the start could not be established. It must never
+    be interpreted as zero worker commits.
+    """
+    cwd = Path(cwd)
+    rc, head, _ = run(
+        ["git", "-C", str(cwd), "rev-parse", "HEAD"], timeout=15
+    )
+    if rc != 0:
+        return {
+            "is_repo": False,
+            "head": "",
+            "dirty_paths": [],
+            "commits_ahead": 0,
+            "committed_paths": [],
+            "effective_start_commit": "",
+            "start_commit_source": "not-a-repository",
+        }
+    dirty = git_status_paths(cwd)
+    effective_start = (start_commit or "").strip()
+    start_source = "recorded" if effective_start else "unknown"
+    if not effective_start:
+        effective_start, start_source = _infer_worker_start(cwd, base_commit)
+    ahead: int | None = None
+    committed_paths: list[str] = []
+    if effective_start:
+        rc, _, _ = run(
+            ["git", "-C", str(cwd), "merge-base", "--is-ancestor",
+             effective_start, "HEAD"],
+            timeout=15,
+        )
+        if rc != 0:
+            effective_start = ""
+            start_source = "invalid"
+    if effective_start:
+        rc, raw, _ = run(
+            ["git", "-C", str(cwd), "rev-list", "--count",
+             f"{effective_start}..HEAD"],
+            timeout=15,
+        )
+        if rc == 0 and raw.strip().isdigit():
+            ahead = int(raw.strip())
+        rc, raw, _ = run(
+            ["git", "-C", str(cwd), "diff", "--name-only", "-z",
+             f"{effective_start}..HEAD"],
+            timeout=20,
+        )
+        if rc == 0:
+            committed_paths = [p for p in raw.split("\0") if p]
+    return {
+        "is_repo": True,
+        "head": head.strip(),
+        "dirty_paths": dirty,
+        "commits_ahead": ahead,
+        "committed_paths": committed_paths,
+        "effective_start_commit": effective_start,
+        "start_commit_source": start_source,
+    }
+
+
+def _git_or_raise(project: Path, args: list[str], *, timeout: int = 30) -> str:
+    rc, out, err = run(["git", "-C", str(project), *args], timeout=timeout)
+    if rc != 0:
+        detail = (err or out).strip()
+        raise WorktreeError(
+            f"git {' '.join(args)} failed" + (f": {detail}" if detail else "")
+        )
+    return out.strip()
+
+
+def _attached_worktree(project: Path, branch: str) -> Path | None:
+    """Return the worktree currently holding `branch`, if any."""
+    rc, out, _ = run(
+        ["git", "-C", str(project), "worktree", "list", "--porcelain"],
+        timeout=20,
+    )
+    if rc != 0:
+        return None
+    wanted = branch if branch.startswith("refs/heads/") else f"refs/heads/{branch}"
+    current_path: Path | None = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            current_path = Path(line[len("worktree "):])
+        elif line == f"branch {wanted}" and current_path is not None:
+            return current_path
+        elif not line.strip():
+            current_path = None
+    return None
+
+
+def session_for_branch(root: Path, branch: str) -> dict | None:
+    """Session status owning a worker branch."""
+    for status in all_sessions(Path(root)):
+        if status.get("branch") == branch:
+            return status
+    return None
+
+
+def _bookkeeping_snapshot(project: Path, root: Path, base_commit: str,
+                          message: str) -> str:
+    """Snapshot current tracked Foreman inputs without moving HEAD or its index.
+
+    This is used only for a root worker launched from project HEAD. A successor
+    or tester uses its predecessor commit exactly; overlaying manager files there
+    would replace the task evidence the predecessor just produced.
+    """
+    try:
+        root_rel = root.resolve().relative_to(project.resolve()).as_posix()
+    except ValueError as exc:
+        raise WorktreeError(f"Foreman root {root} is outside project {project}") from exc
+
+    fd, index_name = tempfile.mkstemp(prefix="foreman-index-")
+    os.close(fd)
+    env = os.environ.copy()
+    env["GIT_INDEX_FILE"] = index_name
+    try:
+        def call(args: list[str]) -> str:
+            try:
+                p = subprocess.run(
+                    ["git", "-C", str(project), *args],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=env,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise WorktreeError(f"git {' '.join(args)} failed: {exc}") from exc
+            if p.returncode != 0:
+                raise WorktreeError(
+                    f"git {' '.join(args)} failed: {(p.stderr or p.stdout).strip()}"
+                )
+            return p.stdout.strip()
+
+        call(["read-tree", base_commit])
+        paths = []
+        if root.exists():
+            paths.append(root_rel)
+        if (project / ".gitignore").exists():
+            paths.append(".gitignore")
+        if paths:
+            add_paths = list(paths)
+            # These files are manager-owned projections/activity. Workers do not
+            # need a fresh uncommitted copy, and putting it in the synthetic
+            # snapshot makes every later manager append look like a merge conflict.
+            add_paths.extend(
+                f":(exclude){root_rel}/{Path(p).name}"
+                for p in MANAGER_OWNED_PATHS
+                if p.startswith(".foreman/")
+            )
+            call(["add", "-A", "--", *add_paths])
+        tree = call(["write-tree"])
+    finally:
+        try:
+            Path(index_name).unlink()
+        except OSError:
+            pass
+
+    base_tree = _git_or_raise(project, ["rev-parse", f"{base_commit}^{{tree}}"])
+    if tree == base_tree:
+        return base_commit
+    return _git_or_raise(
+        project,
+        ["commit-tree", tree, "-p", base_commit, "-m", message],
+    )
+
+
+def prepare_worker_worktree(
+    project: Path,
+    root: Path,
+    *,
+    name: str,
+    agent: str,
+    harness: str,
+    requested_base: str | None = None,
+    use_worktree: bool = True,
+) -> dict:
+    """Create or validate a worker worktree and its predecessor ancestry.
+
+    Testers default to `foreman/dev-<same suffix>`. Predecessor sessions must be
+    stopped and clean; developer predecessors also need a commit beyond their own
+    session start. These checks turn "your predecessor's work is preserved" from
+    prompt text into a launch precondition.
+    """
+    project = Path(project).resolve()
+    root = Path(root).resolve()
+    is_git = run(
+        ["git", "-C", str(project), "rev-parse", "--git-dir"], timeout=15
+    )[0] == 0
+    if not is_git:
+        if use_worktree or requested_base:
+            raise WorktreeError(f"{project} is not a git repository")
+        return {
+            "cwd": str(project), "branch": "", "base_ref": "",
+            "base_commit": "", "start_commit": "",
+            "lineage_start_commit": "", "base_session": "", "reused": False,
+        }
+
+    short_agent = agent.split(":")[-1]
+    if not use_worktree and short_agent in (
+        "foreman-developer", "foreman-tester"
+    ):
+        raise WorktreeError(
+            f"{short_agent} requires an isolated git worktree; `--worktree no` "
+            "cannot guarantee that the recorded base is the tree being changed or tested"
+        )
+    target_branch = f"foreman/{name}"
+    existing_target = session_for_branch(root, target_branch)
+    base_ref = (requested_base or "").strip()
+    implicit_tester_base = False
+    if not base_ref and existing_target:
+        # Same-name retries resume the recorded branch even if manager HEAD moved
+        # meanwhile. A new successor uses a new name plus explicit --base.
+        base_ref = (
+            existing_target.get("base_commit")
+            or existing_target.get("base_ref")
+            or "HEAD"
+        )
+    elif not base_ref and short_agent == "foreman-tester":
+        if not name.startswith("test-") or len(name) <= len("test-"):
+            raise WorktreeError(
+                "tester names must start with `test-`, or pass `--base <developer-branch>`"
+            )
+        base_ref = "foreman/dev-" + name[len("test-"):]
+        implicit_tester_base = True
+    if not base_ref:
+        base_ref = "HEAD"
+
+    try:
+        base_commit = _git_or_raise(project, ["rev-parse", f"{base_ref}^{{commit}}"])
+    except WorktreeError as exc:
+        if implicit_tester_base:
+            raise WorktreeError(
+                f"tester `{name}` expected developer branch `{base_ref}`, but it does "
+                "not exist. Do not fall back to HEAD; pass the actual `--base` branch"
+            ) from exc
+        raise
+
+    session_base_ref = (
+        base_ref[len("refs/heads/"):]
+        if base_ref.startswith("refs/heads/") else base_ref
+    )
+    predecessor = session_for_branch(root, session_base_ref)
+    if session_base_ref.startswith("foreman/") and predecessor is None:
+        raise WorktreeError(
+            f"Foreman base `{base_ref}` has no matching session metadata under "
+            f"{sessions_dir(root)}. Its live/dirty state and session commits cannot "
+            "be verified; restore the status file or use a reviewed non-Foreman ref"
+        )
+    lineage_start = base_commit
+    if predecessor:
+        pred_name = predecessor.get("name") or base_ref
+        pred_agent = (predecessor.get("agent") or "").split(":")[-1]
+        pred_cwd_raw = predecessor.get("cwd") or ""
+        if pid_alive(predecessor.get("pid")):
+            raise WorktreeError(
+                f"predecessor `{pred_name}` is still running; wait for DONE before "
+                "branching from or removing its worktree"
+            )
+        if pred_cwd_raw and Path(pred_cwd_raw).is_dir():
+            pred_cwd = Path(pred_cwd_raw)
+            dirty = git_status_paths(pred_cwd)
+            if dirty:
+                sample = ", ".join(dirty[:8])
+                more = f" (+{len(dirty) - 8} more)" if len(dirty) > 8 else ""
+                raise WorktreeError(
+                    f"predecessor `{pred_name}` has uncommitted work: {sample}{more}. "
+                    "Commit the task-scoped files explicitly before spawning a successor"
+                )
+        recorded_lineage = (
+            predecessor.get("lineage_start_commit")
+            or predecessor.get("start_commit")
+            or predecessor.get("base_commit")
+        )
+        if recorded_lineage:
+            lineage_start = recorded_lineage
+            rc, _, _ = run(
+                ["git", "-C", str(project), "merge-base", "--is-ancestor",
+                 lineage_start, base_commit],
+                timeout=15,
+            )
+            if rc != 0:
+                raise WorktreeError(
+                    f"predecessor `{pred_name}` does not contain its recorded "
+                    f"lineage start `{lineage_start}`; refusing an unverifiable handoff"
+                )
+            session_start = predecessor.get("start_commit") or lineage_start
+            rc, _, _ = run(
+                ["git", "-C", str(project), "merge-base", "--is-ancestor",
+                 session_start, base_commit],
+                timeout=15,
+            )
+            if rc != 0:
+                raise WorktreeError(
+                    f"predecessor `{pred_name}` does not contain its recorded "
+                    f"session start `{session_start}`; refusing an unverifiable handoff"
+                )
+            rc, raw, _ = run(
+                ["git", "-C", str(project), "rev-list", "--count",
+                 f"{session_start}..{base_commit}"],
+                timeout=20,
+            )
+            ahead = int(raw.strip()) if rc == 0 and raw.strip().isdigit() else 0
+        else:
+            # Pre-0.4 status files had no ancestry metadata. Infer the fork point,
+            # but do not count Foreman's synthetic bookkeeping commit as worker
+            # progress—the exact lost-session case this check exists to catch.
+            lineage_start = _git_or_raise(
+                project, ["merge-base", "HEAD", base_commit]
+            )
+            rc, raw, _ = run(
+                ["git", "-C", str(project), "rev-list", "--reverse",
+                 f"{lineage_start}..{base_commit}"],
+                timeout=20,
+            )
+            ahead = 0
+            for commit in raw.splitlines() if rc == 0 else []:
+                subject = _git_or_raise(project, ["show", "-s", "--format=%s", commit])
+                if subject.startswith(BOOKKEEPING_COMMIT_PREFIX) and ahead == 0:
+                    lineage_start = commit
+                else:
+                    ahead += 1
+        # Tester evidence is stored in its session directory, so a tester may
+        # legitimately leave its branch at the exact developer commit. A
+        # developer, however, must contribute a commit after *its own* start;
+        # inherited commits from an earlier worker do not prove its work survived.
+        if ahead == 0 and pred_agent != "foreman-tester":
+            raise WorktreeError(
+                f"predecessor `{pred_name}` has no worker commit beyond its session start "
+                f"commit. Its work is not preserved on `{base_ref}`"
+            )
+
+    if not use_worktree:
+        return {
+            "cwd": str(project),
+            "branch": "",
+            "base_ref": base_ref,
+            "base_commit": base_commit,
+            "start_commit": base_commit,
+            "lineage_start_commit": lineage_start,
+            "base_session": predecessor.get("name", "") if predecessor else "",
+            "reused": False,
+        }
+
+    branch = target_branch
+    wt_parent = project / (".grok" if harness == "grok" else ".claude") / "worktrees"
+    wt = wt_parent / f"foreman-{name}"
+
+    # A same-name retry resumes its existing branch only when it still contains
+    # the requested base. Never silently attach a stale branch to a new brief.
+    branch_exists = run(
+        ["git", "-C", str(project), "show-ref", "--verify", "--quiet",
+         f"refs/heads/{branch}"],
+        timeout=15,
+    )[0] == 0
+    attached = _attached_worktree(project, branch) if branch_exists else None
+    if branch_exists:
+        rc, _, _ = run(
+            ["git", "-C", str(project), "merge-base", "--is-ancestor",
+             base_commit, branch],
+            timeout=15,
+        )
+        if rc != 0:
+            raise WorktreeError(
+                f"existing `{branch}` does not contain requested base `{base_ref}`; "
+                "use a new session name"
+            )
+        if attached and attached.resolve() != wt.resolve():
+            raise WorktreeError(
+                f"`{branch}` is already checked out at {attached}; use that session "
+                "or choose a new name"
+            )
+        if not wt.is_dir():
+            wt.parent.mkdir(parents=True, exist_ok=True)
+            _git_or_raise(project, ["worktree", "add", "-q", str(wt), branch], timeout=60)
+        status = session_for_branch(root, branch) or {}
+        start_commit = status.get("start_commit") or base_commit
+        return {
+            "cwd": str(wt),
+            "branch": branch,
+            "base_ref": base_ref,
+            "base_commit": base_commit,
+            "start_commit": start_commit,
+            "lineage_start_commit": status.get("lineage_start_commit") or lineage_start,
+            "base_session": (
+                status.get("base_session")
+                or (predecessor.get("name", "") if predecessor else "")
+            ),
+            "reused": True,
+        }
+
+    # Root workers need current uncommitted Foreman inputs. Successors and testers
+    # use their predecessor commit exactly so its task evidence cannot be replaced
+    # by the manager checkout's older copy.
+    start_commit = base_commit
+    if not requested_base and not implicit_tester_base and base_ref == "HEAD":
+        start_commit = _bookkeeping_snapshot(
+            project, root, base_commit,
+            f"foreman: bookkeeping before spawning {name}",
+        )
+        lineage_start = start_commit
+
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    _git_or_raise(
+        project,
+        ["worktree", "add", "-q", "-b", branch, str(wt), start_commit],
+        timeout=60,
+    )
+    rc, _, _ = run(
+        ["git", "-C", str(project), "merge-base", "--is-ancestor",
+         base_commit, branch],
+        timeout=15,
+    )
+    if rc != 0:
+        raise WorktreeError(
+            f"spawn verification failed: `{branch}` does not contain `{base_ref}`"
+        )
+    return {
+        "cwd": str(wt),
+        "branch": branch,
+        "base_ref": base_ref,
+        "base_commit": base_commit,
+        "start_commit": start_commit,
+        "lineage_start_commit": lineage_start,
+        "base_session": predecessor.get("name", "") if predecessor else "",
+        "reused": False,
+    }
 
 
 # --- task files ---------------------------------------------------------------

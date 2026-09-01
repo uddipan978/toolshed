@@ -83,3 +83,9 @@ question, at full cost.
 **Referencing conversation the worker cannot see.** Workers are separate sessions with no
 access to your history. "As we discussed" is invisible to them. Reference paths, never
 conversation.
+
+**Claiming predecessor work without checking the branch.** Prompt text cannot move
+uncommitted files. Launch successors with `spawn.sh --base foreman/<predecessor>`; spawn
+must confirm that session is stopped and clean. A developer branch must be ahead of that
+session's own recorded start—not merely contain commits inherited from an earlier worker.
+If spawn refuses, salvage the worktree before writing "preserved" in a brief.

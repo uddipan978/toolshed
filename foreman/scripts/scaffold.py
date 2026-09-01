@@ -348,8 +348,10 @@ needs; the session directory is only how it got made.
 
 They live outside this directory at `<project>/.claude/worktrees/` (Claude) or
 `<project>/.grok/worktrees/` (Grok) and are added to the project `.gitignore` by
-the scaffolder. `scripts/integrate.sh` merges a finished worker's branch back and
-removes its worktree. The path is stored on the session `status.json`.
+the scaffolder. A tester branch contains its developer predecessor; after G4,
+`scripts/integrate.sh` replays that tested worker lineage onto the manager branch and
+removes only stopped, clean worktrees. The path and verified base/start commits are
+stored in the session `status.json`.
 
 ## Status legend
 

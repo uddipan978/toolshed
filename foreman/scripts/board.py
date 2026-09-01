@@ -59,11 +59,14 @@ def card(task: dict, live: dict[str, dict]) -> str:
     sess = live.get(task["session"])
     if sess:
         state = sess.get("state", "")
-        if state in ("stuck", "overdue"):
-            tags.append(f"#{state}")
+        state_base = str(state).split(":")[0]
+        if state_base in ("stuck", "overdue", "ready", "review", "stopped"):
+            tags.append(f"#{state_base}")
         pct = sess.get("context_pct")
         if isinstance(pct, (int, float)) and pct >= sess.get("compact_pct", 55):
             tags.append("#compacting")
+        if int(sess.get("uncommitted_count") or 0) > 0:
+            tags.append("#uncommitted")
 
     if tags:
         bits.append("  " + " ".join(tags))

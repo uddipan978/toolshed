@@ -50,6 +50,12 @@ No gate is skipped to save time. A small change gets a thin version of each.
 Each worker gets its own git worktree and runs with permissions bypassed, so it never
 stalls on a prompt and cannot damage the main checkout.
 
+`spawn.sh --base <branch>` carries predecessor ancestry into a successor. A normal
+`test-X` worker defaults to `foreman/dev-X`; launch fails rather than falling back to
+HEAD when that predecessor is live, dirty, missing, or contains no worker commit. After
+G4, Foreman integrates the tester lineage—the exact worker commits tested—not the
+developer branch or its synthetic launch snapshot.
+
 `supervise.py` reads the captured `stream-json` — the supported interface — and emits one
 event per state change:
 
@@ -59,17 +65,25 @@ event per state change:
 | `STUCK` | read `progress.md`, unblock or respawn from handover |
 | `OVERDUE` | stop, seed a successor from the handover |
 | `COMPACT` | informational — it self-compacted at 55% |
+| `CHECKPOINT` | 40% of turns used while dirty — commit explicit task-scoped paths now |
+| `SALVAGE` | worker stopped dirty — preserve the worktree; the branch does not contain that work |
 | `TURNS` | 80% of the turn cap used — narrow scope or prepare a successor |
-| `BUDGET` | cap reached; successor or descope |
-| `DONE` | verify the acceptance boxes and `[t]` (not `[x]`), then G4, then `integrate.sh` |
-| `FAILED` | fix the brief, then respawn |
+| `BUDGET` | cap reached — wait for `READY`/`REVIEW`; choose successor only from missing artefacts |
+| `DONE` | verify evidence, clean git state and ancestry, then G4, then integrate the tested branch |
+| `READY` | process ended abnormally, but completion evidence is valid — review its verdict, then advance or route |
+| `REVIEW` | process ended with unresolved gate evidence — inspect `completion_problems`; do not restart blindly |
+| `FAILED` | an ungated process failed; inspect its result subtype |
 
 Compaction fires at 55% via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. A `PreCompact` hook writes
 a handover document; a `SessionStart(compact)` hook injects it into the fresh context.
 
-A `Stop` hook refuses to let a worker finish while its acceptance boxes are unchecked,
-its Activity log is empty, the brief has no `**Task file**`, or a developer has marked
-`[x]` before G4 — up to three times, then it defers to the manager.
+A `Stop` hook resolves tasks against the worker worktree. Developers need checked
+acceptance, Verify output, `[t]`, a clean worktree and a worker commit. Testers need a
+result for every declared `TC-NN`; beta testers need a structured review. A documented
+failure may stop—the manager routes it—while missing evidence may not. After three
+blocks, the process may exit to avoid a trap. The supervisor then rechecks current
+artefacts and emits `READY:gate_deferred` when they pass or `REVIEW:gate_deferred`
+with concrete problems when they do not—never a generic failure.
 
 ## What it writes
 
@@ -102,7 +116,7 @@ Four views of the same data, because no one format reaches everyone:
 | `STATUS.md` | yes | anyone — repo browser, editor, Obsidian |
 | `board.html` | yes | a teammate who cloned; visual, no plugin |
 | `board.md` | yes | you, in Obsidian — drag-and-drop |
-| `work/dashboard.html` | no | the live run: context %, spend, alerts |
+| `work/dashboard.html` | no | the live run: session gauges, spend, alerts; click a card to read `stream.jsonl` |
 
 A `board.md` wikilink renders as literal text on GitHub, and a repo browser shows HTML
 as source — which is why `STATUS.md` is the default. `board.html` is deliberately
@@ -132,10 +146,18 @@ parallelises far worse than research does — both are why the ceiling is low.
 - [reference/critique-format.md](reference/critique-format.md) — CRITIQUE.md schema
 - [reference/task-format.md](reference/task-format.md) — task file schema, status legend
 - [reference/delegation-brief.md](reference/delegation-brief.md) — the four mandatory fields
+- [reference/evidence-format.md](reference/evidence-format.md) — enforced G4/G5 evidence schemas
 - [reference/troubleshooting.md](reference/troubleshooting.md) — known traps and rejected dependencies
 - [reference/harness.md](reference/harness.md) — Claude vs Grok worker adapters
 
 ## Developing
+
+```bash
+python3 -m unittest -v tests/test_foreman.py
+```
+
+The suite creates temporary git repositories for the developer → tester → integration
+handoff, including dirty/live predecessor refusal and parallel manager bookkeeping edits.
 
 The plugin cache **copies** files at install time — editing this repo does not change
 what is installed. After an edit, either:

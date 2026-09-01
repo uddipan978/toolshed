@@ -25,4 +25,15 @@ exit and before compact. Do not route on a stale file.
 3–5 concurrent workers. Never more. Fan out only across `[P]` tasks with disjoint
 file sets. Scale to the request.
 
+Testers branch from the matching developer by name (`test-X` → `foreman/dev-X`),
+or from the explicit `--base` you supply. Spawn refuses a live, dirty, or empty
+predecessor. After G4, integrate the **tester** session branch: it contains the exact
+developer ancestry that was tested. Never integrate or remove a live/dirty worktree.
+
+`CHECKPOINT` means commit explicit task-scoped paths now; `SALVAGE` means a stopped
+worker left uncommitted work and its branch does not preserve it. Never claim otherwise.
+`READY` means an abnormal process exit whose current gate artefacts pass; advance it after
+review. `REVIEW` names unresolved `completion_problems`; do not automatically redevelop
+finished work merely because the process hit its turn or budget cap.
+
 If you find yourself writing product code, stop.

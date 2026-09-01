@@ -82,47 +82,82 @@ match, and `**Status**` to `[~]` for a developer spawn.
 | `STUCK` | Read its `progress.md` and the tail of `stream.jsonl`. Unblock by message, or stop and respawn from its handover. |
 | `OVERDUE` | Stop it. Read the newest `handover-N.md`. Spawn a successor seeded from that file. |
 | `COMPACT` | Informational — it self-compacted and wrote a handover. No action. |
+| `CHECKPOINT` | At 40% of the turn cap, the worktree is still dirty. Tell the worker to commit explicit task-scoped paths now; never `git add -A`. |
+| `SALVAGE` | A stopped worker has uncommitted files. Do not remove, integrate, or claim its branch preserved them. Inspect and commit explicit paths, then base the successor on that branch. |
 | `TURNS` | It has used 80% of its turn cap. Narrow the remaining scope or prepare a successor. |
-| `BUDGET` | Its cap stopped it. Successor or descope; record which and why. |
-| `DONE` | **Verify before advancing.** Open the task file: are the acceptance boxes actually checked, does the Activity log carry real Verify output, and is status `[t]` (developer) — never `[x]` before G4? |
-| `FAILED` | Read `stderr.log`. Fix the brief, then respawn — never respawn an unchanged brief. |
+| `BUDGET` | Its cap was reached. Wait for `READY`/`REVIEW`; choose a successor only if the completion evidence names missing work. |
+| `DONE` | **Verify before advancing.** Open the task file in `status.json`'s `cwd`: are the acceptance boxes checked, does the Activity log carry real Verify output, is status `[t]`, is the worktree clean, and is the branch ahead of `start_commit`? |
+| `READY` | The process hit a cap/deferred stop, but its completion evidence is valid. Review the verdict, then advance or route exactly as for any completed session; do not redevelop it merely because of the subtype. |
+| `REVIEW` | Read `status.json.completion_problems` and the artefacts. Repair or salvage only what is actually missing; do not equate the process subtype with failed work. |
+| `FAILED` | An ungated process failed. Read `stderr.log` and its result subtype before deciding whether to resume or respawn. |
 
 A worker reporting success is a claim, not evidence. Check the artefact. Advancing a gate
 on a worker's say-so is the most common way systems like this ship defects.
 
 ## G4 — Test
 
-When a task's development passes, spawn a tester against it:
+When a task's development passes, wait for the supervisor's `DONE` or `READY` event. Its
+branch must be clean and contain a worker commit. Then spawn a tester against that exact
+branch:
 
 ```bash
 "$PLUGIN_ROOT/scripts/spawn.sh" --name test-m01-02 --agent foreman-tester \
-  --brief .foreman/work/sessions/test-m01-02/brief.md --root .foreman --deadline 45
+  --brief .foreman/work/sessions/test-m01-02/brief.md --root .foreman \
+  --base foreman/dev-m01-02 --deadline 45
 ```
 
-Set the task status to `[t]` if the developer has not already. A failure routes back to
-the developer who wrote it, with the tester's reproduction steps in the new brief. Then
-it is re-tested — a fix is not verified by the person who made it. Testers write
-`results.md`; they do not set `[x]`.
+`--base` is optional for the normal naming pair: `test-m01-02` automatically resolves
+to `foreman/dev-m01-02`. Keep it explicit in unusual/fix-round names. Spawn verifies the
+predecessor is stopped and clean, that a developer predecessor committed work after its
+own `start_commit`, and that the new branch contains the recorded base commit. A tester
+predecessor may add no commit because its evidence lives in the session directory. A
+failed check is a rescue, not a reason to fall back to HEAD.
 
-After G4 **passes**, set status `[b]`. G5 always runs (`--has-ui` only selects the
-path). `[x]` is after G5, never after the developer.
+Confirm the task is `[t]` in the developer worktree. Do not mirror-edit the manager
+checkout's older copy before integration; that creates an avoidable task-file conflict.
+A failure routes back to the developer who wrote it, with the tester's reproduction steps in the new brief. Then
+it is re-tested — a fix is not verified by the person who made it. Base a fix worker on
+the failed tester branch so it inherits the exact tree and any committed regression test:
+
+```bash
+"$PLUGIN_ROOT/scripts/spawn.sh" --name dev-m01-02-fix-1 --agent foreman-developer \
+  --brief .foreman/work/sessions/dev-m01-02-fix-1/brief.md --root .foreman \
+  --base foreman/test-m01-02
+```
+
+Testers write `testcases.md` and `results.md` to
+[reference/evidence-format.md](../../reference/evidence-format.md); they do not set
+`[x]`. A `fail` or `could-not-run` verdict is valid evidence and may stop—the manager
+routes it. Missing case outcomes may not stop.
+
+After G4 **passes**, integrate the tested branch first, then set the manager copy to
+`[b]`. G5 always runs (`--has-ui` only selects the path). `[x]` is after G5, never
+after the developer.
 
 ## Integrate as soon as a task passes G4
 
 ```bash
-"$PLUGIN_ROOT/scripts/integrate.sh" --name dev-m01-02 --root .foreman
+"$PLUGIN_ROOT/scripts/integrate.sh" --name test-m01-02 --root .foreman
 ```
 
-This merges the worker's branch into the base branch and removes its worktree.
+This integrates the **tested branch**. The tester branch contains the developer commit it
+was based on, plus any committed regression spec. The script checks recorded ancestry,
+then rebases only worker-produced commits after `lineage_start_commit` onto the manager
+branch and fast-forwards it. That deliberately excludes the synthetic `.foreman` snapshot
+that otherwise conflicts with normal manager status/log edits. It refuses live or dirty
+worktrees, removes the tester worktree, and cleans the stopped/clean developer predecessor
+when safe.
 
-**Do this per task, not at the end of the run.** `spawn.sh` branches from HEAD, so a
-task spawned before its dependency is integrated will never see that dependency's code —
-it silently builds against a stale tree. Integrating incrementally is what keeps the
-dependency order you planned in G1 actually true on disk.
+**Do this per task, not at the end of the run.** A root worker with no `--base` starts
+from the manager's current HEAD. A successor that must start before its predecessor is
+integrated needs an explicit `--base foreman/<predecessor>`; tester names get that base
+automatically. Incremental integration keeps the dependency order planned in G1 true on
+disk and keeps the main branch green.
 
 A merge conflict here is reported, never auto-resolved, and the merge is aborted so the
-base branch is untouched. Treat it as a **planning error**: two tasks you marked `[P]`
-touched the same files. Fix the decomposition, do not hand-resolve and move on.
+base branch is untouched. A product-file conflict may mean overlapping `[P]` scope or a
+stale base. A `.foreman/`-only conflict is coordination/bookkeeping drift—not evidence of
+a decomposition failure. Preserve task evidence and regenerate manager-owned log/boards.
 
 ## G5 — Beta
 
@@ -146,7 +181,9 @@ journey; no browser, no Lighthouse, no `/impeccable`.
 
 Severity 3–4 findings route back as new tasks. Severity 0–2 go to the user at G6 as
 known-and-accepted, not silently dropped. After G5 passes, set the module's tasks to
-`[x]`. The beta tester writes only under `.foreman/work/`.
+`[x]`. The beta tester writes only under `.foreman/work/`; `beta-review.md` follows
+[reference/evidence-format.md](../../reference/evidence-format.md) and is enforced by
+the Stop hook.
 
 ## Keep the board honest
 
@@ -158,9 +195,10 @@ python3 "$PLUGIN_ROOT/scripts/dashboard.py" --root .foreman
 ```
 
 Workers forget to close out tasks — this is the single most common coordination failure.
-Reconcile every sweep: a developer session `done` whose file still reads `[~]` should
-be `[t]` (or re-dispatched). A file at `[x]` whose G4 has not passed is a gate error
-— revert to `[t]`.
+While a branch is unintegrated, inspect its task through the session `cwd`; the manager
+checkout may correctly remain `[~]`. Do not copy-edit it to `[t]` before the tested branch
+lands. After integration, reconcile the manager copy to `[b]`. A file at `[x]` whose G5
+has not passed is a gate error—revert it to `[b]`.
 
 Append every spawn, transition, failure and fix to `.foreman/log.md`. Rewrite
 `.foreman/work/memory.md` the same moment — **Gate** `G3` until every task is

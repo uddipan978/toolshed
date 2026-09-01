@@ -9,6 +9,14 @@ narrow: state transitions and threshold crossings only, never routine progress.
 
 Escalation ladder (minutes without a new stream event):
   10  log only        15  POKE      30  ESCALATE      deadline/budget  STOP
+
+Git ladder:
+  40% of turn cap + dirty  CHECKPOINT     stopped + dirty  SALVAGE
+
+Terminal classification:
+  normal success + complete artefacts  DONE
+  abnormal exit + complete artefacts   READY:<subtype>
+  terminal + incomplete artefacts      REVIEW:<subtype>
 """
 from __future__ import annotations
 
@@ -18,12 +26,16 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from foreman_lib import (append_log, load_json, pid_alive, read_stream,  # noqa: E402
-                         save_json, sessions_dir)
+from foreman_lib import (  # noqa: E402
+    append_log, load_json, pid_alive, read_stream, save_json, sessions_dir,
+    worktree_snapshot,
+)
+from verify_gate import GATED_AGENTS, session_completion_problems  # noqa: E402
 
 QUIET_LOG = 10 * 60
 QUIET_POKE = 15 * 60
 QUIET_ESCALATE = 30 * 60
+CHECKPOINT_TURN_FRACTION = 0.40
 
 
 def emit(line: str) -> None:
@@ -44,10 +56,52 @@ def assess(sdir: Path, now: float) -> dict:
     budget = float(status.get("budget_usd") or 0)
     compact_pct = float(status.get("compact_pct") or 55)
 
-    if stream["finished"] or not alive:
+    # One repository read feeds dirty monitoring, provenance reporting, and the
+    # terminal completion gate. This matters on runs with dozens of sessions.
+    git_state = {
+        "is_repo": False, "dirty_paths": [], "commits_ahead": 0,
+        "committed_paths": [], "head": "", "effective_start_commit": "",
+        "start_commit_source": "not-checked",
+    }
+    cwd_raw = status.get("cwd") or ""
+    cwd = Path(cwd_raw) if cwd_raw else None
+    repository_snapshot = None
+    if status.get("branch") and cwd is not None and cwd.is_dir():
+        git_state = worktree_snapshot(
+            cwd, status.get("start_commit"), status.get("base_commit")
+        )
+        repository_snapshot = git_state
+
+    terminated = bool(stream["finished"] or not alive)
+    completion_problems: list[str] = []
+    termination_subtype = ""
+    if terminated:
         # error_max_budget_usd / error_max_turns are real result subtypes.
-        sub = stream["result_subtype"] or ("exited" if not alive else "done")
-        state = "done" if sub in ("success", "done") else f"stopped:{sub}"
+        termination_subtype = (
+            "gate_deferred" if status.get("gate_deferred")
+            else stream["result_subtype"] or ("exited" if not alive else "done")
+        )
+        short_agent = (status.get("agent") or "").split(":")[-1]
+        if short_agent in GATED_AGENTS:
+            completion_problems = session_completion_problems(
+                sdir, status, repository_snapshot
+            )
+            if completion_problems:
+                review_subtype = (
+                    "gate_incomplete"
+                    if termination_subtype in ("success", "done")
+                    else termination_subtype
+                )
+                state = f"review:{review_subtype}"
+            elif termination_subtype in ("success", "done"):
+                state = "done"
+            else:
+                state = f"ready:{termination_subtype}"
+        else:
+            state = (
+                "done" if termination_subtype in ("success", "done")
+                else f"stopped:{termination_subtype}"
+            )
     elif deadline_ts and now > deadline_ts:
         state = "overdue"
     elif quiet > QUIET_ESCALATE:
@@ -62,6 +116,11 @@ def assess(sdir: Path, now: float) -> dict:
     # for a worker running out of room.
     max_turns = int(status.get("max_turns") or 0)
     turn_pressure = bool(max_turns and stream["turns"] >= 0.8 * max_turns)
+    dirty = bool(git_state["dirty_paths"])
+    checkpoint_pressure = bool(
+        dirty and max_turns
+        and stream["turns"] >= CHECKPOINT_TURN_FRACTION * max_turns
+    )
 
     return {
         "status": status,
@@ -69,9 +128,14 @@ def assess(sdir: Path, now: float) -> dict:
         "quiet": quiet,
         "alive": alive,
         "state": state,
+        "termination_subtype": termination_subtype,
+        "completion_problems": completion_problems,
         "over_budget": bool(budget and stream["cost_usd"] >= budget),
         "over_context": stream["context_pct"] >= compact_pct,
         "turn_pressure": turn_pressure,
+        "git": git_state,
+        "checkpoint_pressure": checkpoint_pressure,
+        "needs_salvage": bool(dirty and (stream["finished"] or not alive)),
     }
 
 
@@ -100,6 +164,14 @@ def sweep(root: Path, once: bool = False) -> None:
                     turns=st["turns"],
                     model=st["model"],
                     quiet_seconds=int(a["quiet"]),
+                    uncommitted_count=len(a["git"]["dirty_paths"]),
+                    uncommitted_paths=a["git"]["dirty_paths"][:20],
+                    commits_ahead=a["git"]["commits_ahead"],
+                    committed_paths=a["git"]["committed_paths"][:50],
+                    effective_start_commit=a["git"]["effective_start_commit"],
+                    start_commit_source=a["git"]["start_commit_source"],
+                    termination_subtype=a["termination_subtype"],
+                    completion_problems=a["completion_problems"],
                     updated_at=int(now),
                 )
                 save_json(sdir / "status.json", a["status"])
@@ -112,6 +184,26 @@ def sweep(root: Path, once: bool = False) -> None:
 
                 # Threshold crossings are keyed separately from state so a
                 # session cannot re-announce the same condition every sweep.
+                if a["needs_salvage"] and seen.get(f"{name}:salvage") != "hit":
+                    seen[f"{name}:salvage"] = "hit"
+                    paths = ", ".join(a["git"]["dirty_paths"][:6])
+                    emit(
+                        f"SALVAGE {name} — worker stopped with uncommitted work: {paths}. "
+                        "Do not integrate, remove the worktree, or claim the branch preserved it."
+                    )
+                    append_log(root, f"`{name}` stopped with uncommitted work requiring salvage")
+                elif a["checkpoint_pressure"] and seen.get(f"{name}:checkpoint") != "hit":
+                    seen[f"{name}:checkpoint"] = "hit"
+                    emit(
+                        f"CHECKPOINT {name} — {st['turns']}/{a['status'].get('max_turns')} "
+                        "turns used with uncommitted work. Commit explicit task-scoped paths now."
+                    )
+                    append_log(
+                        root,
+                        f"`{name}` reached {CHECKPOINT_TURN_FRACTION:.0%} of its turn cap "
+                        "with uncommitted work",
+                    )
+
                 if a["over_context"] and seen.get(f"{name}:ctx") != "hit":
                     seen[f"{name}:ctx"] = "hit"
                     emit(f"COMPACT {name} — crossed {a['status'].get('compact_pct')}% context, {metrics}")
@@ -145,6 +237,18 @@ def sweep(root: Path, once: bool = False) -> None:
                 elif s == "done":
                     emit(f"DONE {name} — {metrics}")
                     append_log(root, f"`{name}` completed — {metrics}")
+                elif s.startswith("ready:"):
+                    subtype = s.split(":", 1)[1]
+                    emit(
+                        f"READY {name} — gates pass despite {subtype}, {metrics}. "
+                        "Review the verdict, then advance or route it."
+                    )
+                    append_log(root, f"`{name}` ready after {subtype} — {metrics}")
+                elif s.startswith("review:"):
+                    subtype = s.split(":", 1)[1]
+                    detail = a["completion_problems"][0] if a["completion_problems"] else "inspect evidence"
+                    emit(f"REVIEW {name} — {subtype}: {detail}, {metrics}")
+                    append_log(root, f"`{name}` needs review after {subtype} — {metrics}")
                 elif s.startswith("stopped:"):
                     emit(f"FAILED {name} — {s.split(':', 1)[1]}, {metrics}")
                     append_log(root, f"`{name}` stopped: {s.split(':', 1)[1]} — {metrics}")

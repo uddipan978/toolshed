@@ -56,7 +56,13 @@ fails, you are not done — fix it or report a blocker.
 
 Then update the task file: status `[t]`, acceptance boxes ticked, Activity log appended.
 **Never write `[x]`.** `[x]` is after independent test (G4), which is someone else's job.
-The Stop hook will reject a stop whose task is `[x]`. Status lives in the file.
+Status lives in the file.
+
+Commit the finished task on your worker branch before reporting done. Stage explicit
+task-scoped paths (`git add path/to/file ...`), inspect `git status`, then commit. **Never
+use `git add -A` or `git add .`** — browser probes and tool scratch are not product work.
+The Stop hook rejects a dirty worktree or a branch with no worker commit because a tester
+or successor cannot inherit uncommitted work.
 
 ## Reporting back
 

@@ -24,6 +24,28 @@ python3 "$PLUGIN_ROOT/scripts/preflight.py"
   --brief .foreman/work/sessions/dev-m01-02/brief.md --root .foreman
 ```
 
+## Branch ancestry
+
+`spawn.sh` accepts `--base <branch-or-commit>`. A tester named `test-X` defaults to
+`foreman/dev-X`; it never falls back to HEAD if that branch is missing. Both adapters use
+`scripts/worktree.py`, which records `base_commit`, `start_commit`, and
+`lineage_start_commit` in `status.json` and verifies the new branch contains its base.
+
+A session-backed base must be stopped and clean. A developer base must contain at least
+one commit after that developer session's own `start_commit`; inherited commits do not
+count. This catches killed workers whose worktree is dirty while their branch still points
+at an ancestor. A tester may add no branch commit because its evidence is in the session
+directory. A `foreman/*` base without matching session metadata is rejected because its
+live/dirty state cannot be verified. Git-backed developers and testers cannot use
+`--worktree no`, because that would run against the manager checkout instead of the
+recorded base. Fix-round successors name the predecessor explicitly:
+
+```bash
+"$PLUGIN_ROOT/scripts/spawn.sh" --name dev-m01-02-fix-1 --agent foreman-developer \
+  --brief .foreman/work/sessions/dev-m01-02-fix-1/brief.md --root .foreman \
+  --base foreman/test-m01-02
+```
+
 Grok sets `GROK_PLUGIN_ROOT` (and a `CLAUDE_PLUGIN_ROOT` alias on hooks). Claude sets `CLAUDE_PLUGIN_ROOT`. Scripts also self-locate via `plugin_root()` when invoked by path.
 
 ## G2 on Grok
@@ -49,7 +71,7 @@ Claude `-p` workers accept `SendMessage` when `crossSessionInbound` is `accept`.
 
 ## Grok-only limits
 
-- No `--max-budget-usd`. `--budget` is stored on `status.json`; the supervisor emits `BUDGET` when captured spend crosses it. The manager stops the pid.
+- No `--max-budget-usd`. `--budget` is stored on `status.json`; the supervisor emits `BUDGET` when captured spend crosses it. The manager stops the pid, then routes from `READY` or `REVIEW` after artefact validation—not from the budget subtype alone.
 - Headless `grok -p` does not create a worktree from `--worktree`. The adapter creates `.grok/worktrees/` itself.
 - Ask-question auto-select: `[toolset.ask_user_question] timeout_secs = 300` in `~/.grok/config.toml` (preflight) and `GROK_ASK_USER_QUESTION_TIMEOUT_SECS=300` on the worker.
 

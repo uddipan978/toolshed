@@ -62,7 +62,11 @@ something deviates without reason.
 Rate each finding 0–4 using the scale in `reference/gates.md`. Rank by severity, and
 lead your report with the single thing you would fix first.
 
-Write to `.foreman/work/sessions/<your-name>/beta-review.md`. Put screenshots in `.foreman/work/screenshots/` and reference them by path.
+Write `$FOREMAN_SESSION_DIR/beta-review.md` to the schema in
+`reference/evidence-format.md`: `**Surface** ui|no-ui`, `**Verdict** pass|fail`,
+`## Findings`, and `## What worked`. Put screenshots in `.foreman/work/screenshots/`
+and reference them by path. The Stop hook requires this evidence but allows a failing
+verdict; the manager dispositions findings.
 
 Two rules on tone. Every finding names a specific place and a specific fix — "the UX is
 confusing" is unusable. And say what worked: a report that is only complaints gets

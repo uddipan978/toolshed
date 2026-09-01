@@ -138,11 +138,17 @@ and set `done` — do not spawn.
 - [ ] Verify command actually run, real output pasted in the Activity log
 - [ ] Task file status `[t]` — never `[x]`. `[x]` is after independent test
 - [ ] Files outside the stated scope untouched
+- [ ] Task-scoped changes committed with explicit paths; worktree clean; branch ahead of its recorded `start_commit`
 
-Enforced by the `Stop` hook (`scripts/verify_gate.py`), which refuses the stop
-while boxes are unchecked, the Activity log is empty, the brief has no
-`**Task file**`, or a developer has marked `[x]` — up to three times, then it
-defers to the manager.
+Enforced by the `Stop` hook (`scripts/verify_gate.py`), which resolves the task against
+the worker `cwd` and refuses the stop while boxes are unchecked, the Activity log is
+empty, the branch is dirty/empty, the brief has no `**Task file**`, or a developer has
+marked `[x]` — up to three times, then it defers to the manager.
+The fourth attempt may exit to avoid trapping a worker forever, but status is marked
+`gate_deferred`. The supervisor re-runs the gate and emits `READY:gate_deferred` if
+the current artefacts pass, otherwise `REVIEW:gate_deferred` with
+`completion_problems`. `READY` means ready for manager disposition; a tester's complete
+`fail` report still routes back to development. Deferred is not synonymous with failed work.
 
 **Then:** G4, not integrate. Integrate after G4 passes.
 
@@ -153,24 +159,36 @@ A developer marking `[x]` is a defect in the gate, not a completed task.
 **Entry:** a task passed G3 (status `[t]`).
 **Owner:** `foreman-tester`, a different session from the developer.
 
+The tester branch must contain the developer branch. `spawn.sh --base <branch>` selects
+it; the normal `test-X` name defaults to `foreman/dev-X`. Spawn refuses a live, dirty,
+or empty predecessor rather than silently falling back to HEAD.
+
 **Exit:**
 - [ ] `testcases.md` written **before** execution
 - [ ] Happy path, each boundary, one malformed input, and the error path covered
 - [ ] Browser flows exercised via Playwright MCP where the feature has a UI
 - [ ] Anything worth re-running left behind as a committed `.spec.ts`
 - [ ] `results.md` states pass / fail / **could not run** for every case
-- [ ] Manager sets status to `[b]`. G5 always runs; `[x]` is after G5.
+- [ ] Manager integrates the tested branch, then sets the manager task copy to `[b]`. G5 always runs; `[x]` is after G5.
 
 A case that could not run is neither pass nor fail. Say so explicitly — silence
 about a skipped case reads as a pass, and that is how defects ship.
 
+File schema: [evidence-format.md](evidence-format.md). The Stop hook requires every
+declared `TC-NN` to have `pass`, `fail`, or `could-not-run`. It permits a failing report
+to finish; the manager decides whether G4 passed and routes failures.
+
 Failures route back to the developer who wrote the code, then are re-tested. A
 fix is never verified by the person who made it.
 
-**Then integrate**: `scripts/integrate.sh --name <session>` merges the worker's
-branch into the base and removes its worktree. Do this before spawning any
-dependent task — `spawn.sh` branches from HEAD, so an un-integrated dependency
-is invisible to the next worker.
+**Then integrate the tester session**: `scripts/integrate.sh --name test-<task>` replays
+the exact tested branch's worker commits—which contain the developer work and any committed
+regression spec—onto the base, excluding the synthetic launch snapshot. It refuses a
+non-terminal or live/dirty session and verifies recorded ancestry. A terminal
+`error_max_turns`/budget/deferred session may integrate only after the same completion
+gate passes on its current artefacts; tester integration additionally requires overall
+`**Verdict** pass`. Do this before spawning a dependent task, because root workers branch
+from HEAD.
 
 ## G5 — Beta
 
@@ -204,6 +222,9 @@ python3 ${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/verify_gate.py --has-
 No browser, no Lighthouse, no `/impeccable` on the no-UI path.
 
 Write only under `.foreman/work/` (the review and screenshots). Do not edit source.
+`beta-review.md` follows [evidence-format.md](evidence-format.md); the Stop hook requires
+its surface, verdict, findings, and what-worked sections while allowing a failing review.
+It also rejects a dirty beta worktree or repository commits made during G5.
 
 ## G6 — Handoff
 

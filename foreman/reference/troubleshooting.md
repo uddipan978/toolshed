@@ -34,9 +34,41 @@ tokens are excluded — this matches how Claude Code computes it for the status 
 fresh checkout of the branch, so anything uncommitted in the main tree is invisible
 inside it — and `.foreman/` is almost always uncommitted when a worker spawns. `spawn.sh`
 writes a `commit-tree` snapshot of `.foreman/` and `.gitignore` **without moving the
-user's HEAD or index**, then points the new branch at that commit. If the snapshot
+user’s HEAD or index**, then points the new branch at that commit. If the snapshot
 fails, spawn exits non-zero — it does not continue on a tree with no task file. If you
 bypass `spawn.sh`, produce an equivalent snapshot yourself.
+
+**A tester must contain the developer commit.** `test-X` defaults to base
+`foreman/dev-X`; use `--base` for any other naming. `scripts/worktree.py` verifies the
+base commit is an ancestor and refuses a predecessor that is still live or has uncommitted
+files. A developer predecessor also needs a commit beyond that session's own start, so
+inherited commits cannot hide an empty/lost session. It never falls back to HEAD.
+After G4, integrate `test-X`, not `dev-X`: the tester branch is the proof of which tree
+was tested.
+
+**A dirty stopped worker is a salvage event, not a branch handoff.** The supervisor emits
+`CHECKPOINT` at 40% of the turn cap and `SALVAGE` immediately when a worker stops dirty.
+Do not remove its worktree or tell a successor the branch preserved it. Inspect the paths,
+stage only task-scoped files explicitly, commit, then use that branch as `--base`.
+
+**Integration never stages worker files for you.** `integrate.sh` refuses live and dirty
+worktrees. This prevents `git add -A` from sweeping browser probes or tool scratch into
+the product. A `.foreman/`-only merge conflict is labelled bookkeeping/coordination
+drift; only product-file conflicts suggest overlapping scope or a stale base.
+
+**The Stop gate resolves task paths in the worker worktree.** Spawn writes `status.json`
+before launch and exports `FOREMAN_WORKTREE_ROOT`, removing the race that previously made
+a completed worker check the manager checkout's older task file. Integration refuses
+non-terminal states and any live PID, closing the PID-zero launch window before it removes
+a worktree. For terminal cap/deferred states it reruns the completion gate: complete work
+may integrate; incomplete evidence remains a `REVIEW`, not an assumed code failure.
+
+**Old status files may lack `start_commit`.** New Claude and Grok spawns persist it before
+launch. For earlier sessions, the gate infers an effective start from `base_commit` or the
+primary-checkout merge-base and skips the synthetic Foreman bookkeeping commit. The
+supervisor records `effective_start_commit` plus `start_commit_source`. If neither source
+can be established, commit count is `unknown`, never zero, and integration stays blocked
+until provenance is reviewed.
 
 **G2 is `--g2-clear`, not "CRITIQUE.md exists".** A file with open findings, a pending
 re-critique, or a thin "looks reasonable" body is not a passed gate. The router and
@@ -65,7 +97,8 @@ creates `.grok/worktrees/foreman-<name>/` itself, same as the Claude adapter doe
 `.claude/worktrees/`.
 
 **Grok has no `--max-budget-usd`.** Spend is read from the stream; the supervisor emits
-`BUDGET` when it crosses the value stored in `status.json`. Stop the pid.
+`BUDGET` when it crosses the value stored in `status.json`. Stop the pid, then wait for
+`READY` or `REVIEW`; a cap is a process outcome, not proof that the work is incomplete.
 
 **`POKE` cannot reach a Grok `-p` worker.** There is no `SendMessage` equivalent. Treat
 POKE as log-only; act on `STUCK`.
