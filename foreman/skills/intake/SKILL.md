@@ -31,6 +31,11 @@ price.
 
 ## Record the commands
 
+Establish whether this is a full product or targeted work. For a product, record
+the smallest useful MVP, the first visual preview the user should see, and what
+production readiness requires. Infer frontend/backend contracts and existing design
+direction from the repository before asking. Carry existing user choices forward.
+
 While you are exploring, work out and confirm the project's commands, then write them into
 the **Commands** table in `.foreman/constitution.md`: install, build, test, lint/typecheck,
 dev server, app URL.
@@ -52,6 +57,8 @@ Fill in `.foreman/REQUIREMENTS.md`:
   cannot imagine the test, the criterion is still too vague.
 - **Out of scope** — as load-bearing as the scope. Write it down or it will be argued
   about later.
+- **Delivery intent** — product/targeted, UI/no-UI, MVP outcome, first preview and
+  production exit criteria. An unrecorded app URL does not make a UI product no-UI.
 - **Open questions** — anything genuinely unresolved, tagged with the clarification marker
   from [reference/task-format.md](../../reference/task-format.md).
 

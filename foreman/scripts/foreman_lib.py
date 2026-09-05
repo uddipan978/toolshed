@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import errno
 import os
 import re
 import subprocess
@@ -97,6 +98,9 @@ def plugin_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+_STREAM_CACHE: dict[str, tuple[tuple, dict]] = {}
+
+
 def read_stream(path: Path) -> dict:
     """Extract live metrics from a captured --output-format stream-json file.
 
@@ -119,6 +123,14 @@ def read_stream(path: Path) -> dict:
         "result_subtype": None,
     }
     if not path.exists():
+        return out
+    try:
+        stat = path.stat()
+        signature = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        cached = _STREAM_CACHE.get(str(path))
+        if cached and cached[0] == signature:
+            return dict(cached[1])
+    except OSError:
         return out
 
     # The file is appended to while we read it; a torn final line is normal.
@@ -181,6 +193,9 @@ def read_stream(path: Path) -> dict:
         out["last_event_ts"] = path.stat().st_mtime
     except OSError:
         pass
+    if len(_STREAM_CACHE) > 256:
+        _STREAM_CACHE.clear()
+    _STREAM_CACHE[str(path)] = (signature, dict(out))
     return out
 
 
@@ -321,7 +336,14 @@ def parse_stream_activity(
         return events
 
     try:
-        lines = path.read_text(errors="replace").splitlines()
+        # The live dashboard is a bounded preview. Raw transcripts remain on
+        # disk; rereading years of tool output on each status write is needless.
+        with path.open("rb") as fh:
+            size = path.stat().st_size
+            fh.seek(max(0, size - 2 * 1024**2))
+            if size > 2 * 1024**2:
+                fh.readline()  # discard a partial first JSON frame
+            lines = fh.read().decode("utf-8", errors="replace").splitlines()
     except OSError:
         return events
 
@@ -436,8 +458,8 @@ def pid_alive(pid: int | None) -> bool:
         return False
     try:
         os.kill(value, 0)
-    except OSError:
-        return False
+    except OSError as exc:
+        return exc.errno == errno.EPERM
     return True
 
 
@@ -449,10 +471,22 @@ def load_json(path: Path, default=None):
 
 
 def save_json(path: Path, data) -> None:
+    atomic_write(path, json.dumps(data, indent=2) + "\n")
+
+
+def atomic_write(path: Path, text: str) -> None:
+    """Unique temporary names prevent concurrent writers sharing a .tmp file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    tmp.replace(path)  # atomic; the supervisor may be read concurrently
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
 
 
 def append_log(root: Path, message: str) -> None:
@@ -478,6 +512,8 @@ def run(cmd: list[str], timeout: int = 60) -> tuple[int, str, str]:
         return 124, "", f"timed out after {timeout}s"
     except FileNotFoundError:
         return 127, "", f"{cmd[0]}: not found"
+    except OSError as exc:
+        return 126, "", f"{cmd[0]}: {exc}"
 
 
 # --- worker git state ---------------------------------------------------------
@@ -832,6 +868,9 @@ def prepare_worker_worktree(
         )
     target_branch = f"foreman/{name}"
     existing_target = session_for_branch(root, target_branch)
+    from ops import session_alive
+    if existing_target and session_alive(existing_target):
+        raise WorktreeError(f"session `{name}` is still running; use its existing session")
     base_ref = (requested_base or "").strip()
     implicit_tester_base = False
     if not base_ref and existing_target:
@@ -878,7 +917,7 @@ def prepare_worker_worktree(
         pred_name = predecessor.get("name") or base_ref
         pred_agent = (predecessor.get("agent") or "").split(":")[-1]
         pred_cwd_raw = predecessor.get("cwd") or ""
-        if pid_alive(predecessor.get("pid")):
+        if session_alive(predecessor):
             raise WorktreeError(
                 f"predecessor `{pred_name}` is still running; wait for DONE before "
                 "branching from or removing its worktree"
@@ -1019,7 +1058,8 @@ def prepare_worker_worktree(
     # use their predecessor commit exactly so its task evidence cannot be replaced
     # by the manager checkout's older copy.
     start_commit = base_commit
-    if not requested_base and not implicit_tester_base and base_ref == "HEAD":
+    manager_head = _git_or_raise(project, ["rev-parse", "HEAD"])
+    if not predecessor and not implicit_tester_base and short_agent != "foreman-tester" and base_commit == manager_head:
         start_commit = _bookkeeping_snapshot(
             project, root, base_commit,
             f"foreman: bookkeeping before spawning {name}",
@@ -1078,6 +1118,13 @@ def parse_task(path: Path) -> dict:
         "session": "",
         "estimate": "",
         "parallel": False,
+        "files": [],
+        "surface": "",
+        "validation": "",
+        "milestone": "",
+        "sprint": "",
+        "track": "general",
+        "problems": [],
         "acceptance_total": 0,
         "acceptance_done": 0,
         "needs_clarification": "[NEEDS CLARIFICATION]" in text,
@@ -1085,12 +1132,20 @@ def parse_task(path: Path) -> dict:
 
     # Fields live on the two bold-prefixed lines under the heading.
     head = text[: text.find("\n## ")] if "\n## " in text else text
+    if len(TASK_HEADING.findall(text)) != 1:
+        task["problems"].append("expected exactly one task heading")
+    fields_seen = set()
     for m in TASK_FIELD.finditer(head):
         key = m.group(1).strip().lower()
         value = m.group(2).strip().rstrip("·").strip()
+        if key in fields_seen:
+            task["problems"].append(f"duplicate {key} field")
+        fields_seen.add(key)
         if key == "status":
             tok = STATUS_TOKEN.search(value)
             task["status"] = LEGEND.get(tok.group(1) if tok else " ", "backlog")
+            if not tok or tok.group(1) not in LEGEND:
+                task["problems"].append("invalid status token")
         elif key == "module":
             task["module"] = value
         elif key in ("depends on", "depends_on"):
@@ -1101,6 +1156,12 @@ def parse_task(path: Path) -> dict:
             task["estimate"] = value
         elif key == "parallel":
             task["parallel"] = "[P]" in value
+        elif key == "files":
+            task["files"] = [p.strip().strip("`") for p in value.split(",") if p.strip()]
+        elif key in ("surface", "validation", "milestone", "sprint", "track"):
+            task[key] = value.strip("`")
+    if "status" not in fields_seen:
+        task["problems"].append("missing status field")
 
     # Acceptance progress, counted only inside the Acceptance section.
     acc = re.search(r"^##\s+Acceptance.*?$(.*?)(?=^##\s|\Z)", text, re.M | re.S)
@@ -1129,8 +1190,22 @@ def all_tasks(root: Path) -> list[dict]:
         for tf in sorted(modules.glob("*/tasks/*.md")):
             try:
                 tasks.append(parse_task(tf))
-            except Exception:  # noqa: BLE001 - one bad file must not break the board
-                continue
+            except (OSError, ValueError) as exc:
+                # Keep the file visible and block mutations; silently dropping
+                # unreadable tasks produces reassuring but false totals.
+                tasks.append({"path": tf, "id": tf.stem, "title": "Unreadable task",
+                              "status": "blocked", "module": tf.parent.parent.name,
+                              "depends_on": "", "session": "", "estimate": "",
+                              "parallel": False, "acceptance_total": 0, "acceptance_done": 0,
+                              "needs_clarification": False, "files": [], "surface": "",
+                              "validation": "", "milestone": "", "sprint": "", "track": "general",
+                              "problems": [f"cannot read task: {exc}"]})
+    counts = {}
+    for task in tasks:
+        counts[task["id"]] = counts.get(task["id"], 0) + 1
+    for task in tasks:
+        if counts[task["id"]] > 1:
+            task["problems"].append(f"duplicate task ID {task['id']}")
     return sorted(tasks, key=lambda t: t["id"])
 
 
@@ -1571,6 +1646,14 @@ def infer_gate(root: Path) -> str:
         return "G1"
     if not critique_is_clear(parse_critique(root / "CRITIQUE.md")):
         return "G2"
+    delivery = load_json(root / "delivery.json")
+    if delivery:
+        sprint = next((s for s in delivery.get("sprints", []) if s.get("id") == delivery.get("active_sprint")), None)
+        if not sprint:
+            return "G1"
+        tasks = [t for t in tasks if t["id"] in sprint.get("tasks", [])]
+        if not tasks:
+            return "G1"
     if all(t.get("status") == "done" for t in tasks):
         return "G6"
     return "G3"

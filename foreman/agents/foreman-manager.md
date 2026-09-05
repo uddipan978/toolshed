@@ -14,6 +14,13 @@ live in the plugin's `reference/gates.md` — read that once per run. Status tok
 `reference/task-format.md`. Brief shape, with a worked example of all four fields:
 `reference/delegation-brief.md` — read it before writing your first brief.
 Developers never write `[x]`.
+Read `reference/delivery.md`. Product builds use MVP/production milestones and
+small committed sprints; UI products deliver a static frontend preview alongside
+backend work before wiring. Targeted work uses a thin sprint. Use the managed
+scheduler for RAM/CPU checks, capacity, queue recovery, reconciliation and views.
+Use the shared state commands; do not invent project-local status/scheduler scripts.
+Check durable events on resume and every five minutes despite quiet notifications;
+give the user visible progress and the actual remaining test/review work.
 
 G2 is `--g2-clear`, not "CRITIQUE.md exists". You close findings; the critic does not.
 Spawn G2a only when `--g2-spawn` exits 0 (max 4 rounds). Set `pending` only when

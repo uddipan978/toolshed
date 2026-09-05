@@ -17,8 +17,16 @@ once per run before spawning anything. Do not restate it; follow it.
 
 Worker launch is harness-specific: [reference/harness.md](../../reference/harness.md).
 Claude is the default adapter; Grok uses `GROK_SESSION_ID` or `--harness grok`.
+Delivery scope and runtime: [reference/delivery.md](../../reference/delivery.md).
+Read it for product/MVP/sprint planning, targeted work, parallel static frontend and
+backend tracks, resource admission, event recovery and automatic views.
 
-## Step 0 — preflight, always
+## Step 0 — route status before setup
+
+If the user requested status, run `/foreman:board` and report. Do not install
+dependencies, scaffold, start workers or advance gates for a status request.
+
+For build/resume work, preflight:
 
 ```bash
 PLUGIN_ROOT="${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
@@ -64,11 +72,13 @@ python3 "$PLUGIN_ROOT/scripts/verify_gate.py" --g2-clear --root .foreman
 |---|---|
 | No `REQUIREMENTS.md`, or it still carries clarification markers | **G0** — `/foreman:intake` |
 | Requirements clean, no task files under `modules/*/tasks/` | **G1** — `/foreman:plan` |
+| No valid `delivery.json` or no active sprint | **G1** — define/review remaining scope; retain completed work |
 | Task files exist, `--g2-clear` exits non-zero | **G2** — below |
 | `--g2-clear` exits 0, tasks not all `[x]` | **G3–G5** — `/foreman:run` |
-| All tasks `[x]` | **G6** — hand off (below) |
+| All active sprint tasks `[x]` | **G6** — demonstrate, review, close sprint; continue authorized next sprint |
 
-If the user said `status`, skip straight to the board and report — do not advance anything.
+Use `delivery.py check` before G3. After G2 clears, start the planned sprint with
+`delivery.py start SNN`; never run arbitrary backlog outside the frozen scope.
 
 **No gate is skipped to save time.** Scale a gate down — never skip it. If the user asks
 you to skip one, say what it protects against, then do as they ask and record it in
@@ -145,7 +155,8 @@ A `CRITIQUE.md` that exists with open findings is not a passed gate.
 ## Standing rules for this whole run
 
 **Task files are the source of truth.** `STATUS.md`, `board.md` and `dashboard.html` are
-derived views; regenerate them, never hand-edit them. Status lives in the task file, not
+derived views. Use `state.py` for manager transitions; spawn and integration update
+their states and all views in the same workflow. Status lives in the task file, not
 in a commit message and not in your head. Tokens and who may write them:
 [reference/task-format.md](../../reference/task-format.md). Developers never write `[x]`.
 
@@ -164,18 +175,18 @@ does.
 **Estimate in LLM units** — turns, tool calls, complexity band, phases. Never days or
 hours. A human calendar estimate for agent work is a fiction that misleads everyone.
 
-**Every question to the user puts the recommended option first**, labelled
-`(Recommended)`. If it times out and you are told the user may be away: take the
-recommended option, write `.foreman/decisions/DNN-<slug>.md` with `auto_selected: true`
-plus what you chose, what you rejected and why, append to `log.md`, and keep going. Never
-stall the run.
+**Carry authorization forward.** Resolve routine reversible choices within scope
+and record consequential assumptions. A timeout does not grant permission or accept
+a known defect. If an external action requires new authority, keep it pending and
+continue independent work. Report decisions made while the user was away at handoff.
 
 **Log every significant action** to `.foreman/log.md` — spawns, gate transitions,
 decisions, failures, fixes.
 
 ## G6 — handoff
 
-Only reached when development, testing and beta review have all passed. Give the user:
+Reached when the active sprint's development, testing and beta review have passed.
+Run the recorded demo, close the sprint through `delivery.py`, and give the user:
 
 1. What was built, in plain English — one paragraph, no jargon.
 2. How to run and see it — the exact commands from `constitution.md`.
@@ -183,6 +194,11 @@ Only reached when development, testing and beta review have all passed. Give the
 4. **Every auto-selected decision**, in one block, each reversible.
 5. What was left out, and why.
 6. Total spend and wall time across all sessions.
+7. Sprint commitment vs delivered scope, new scope and remaining G4/G5 work;
+   preview/mock status, MVP progress and production readiness separately.
+
+Continue to the next sprint while it remains within the authorized objective.
+Do not claim production complete from a static preview or a passed MVP alone.
 
 Then regenerate the board and dashboard and give them the dashboard path.
 

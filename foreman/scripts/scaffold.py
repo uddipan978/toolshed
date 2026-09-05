@@ -105,6 +105,9 @@ TASK_TEMPLATE = """# T-{num} — {title}
 **Module** M{module} · **Status** `[ ]` · **Parallel** {parallel} · **Depends on** {depends}
 **Session** — · **Est** {estimate}
 **Traces to** {traces}
+**Milestone** {milestone} · **Sprint** {sprint} · **Track** {track}
+**Surface** {surface} · **Validation** {validation}
+**Files** {files}
 
 ## Why
 _What breaks if this is absent or wrong._
@@ -123,6 +126,62 @@ _EARS form. Each box is checkable by someone who did not write the task._
 _As load-bearing as Build._
 
 ## Activity log
+"""
+
+DELIVERY_TEMPLATE = """{
+  "version": 1,
+  "mode": "product",
+  "surface": "ui",
+  "active_sprint": null,
+  "limits": {
+    "workers": 3,
+    "test_reserve": 1,
+    "max_fix_rounds": 3,
+    "cpu_pause_pct": 85,
+    "min_available_mb": 1024,
+    "min_available_pct": 15
+  },
+  "milestones": [
+    {"id": "MVP", "kind": "mvp", "outcome": "", "exit_criteria": []},
+    {"id": "PROD", "kind": "production", "outcome": "", "exit_criteria": []}
+  ],
+  "sprints": [
+    {"id": "S01", "milestone": "MVP", "goal": "", "demo": "",
+     "turn_budget": 600, "preview": "", "tracer": "", "tasks": []}
+  ]
+}
+"""
+
+DESIGN_TEMPLATE = """# Design direction
+
+**Status** proposed
+**Decision** Record the source of the chosen direction and any user feedback.
+
+## Journey
+
+## Layout
+
+## States
+
+## Accessibility
+
+## Preview
+Record the runnable preview command, route, screenshots and feedback here.
+"""
+
+CONTRACTS_TEMPLATE = """# Frontend/backend contract
+
+## Operations and schemas
+Named requests, responses, errors, validation rules and ownership.
+
+## Fixtures
+Representative data for the static preview; match the same typed contract as the backend.
+
+## States
+Loading, empty, populated, error, permission denied and recovery behavior.
+
+## Wiring
+Which task swaps the fixture adapter for the real API; integration and contract tests.
 """
 
 MEMORY = """# Working memory
@@ -405,6 +464,9 @@ def scaffold(project: Path, force: bool) -> list[str]:
         "templates/TASK.md": TASK_TEMPLATE,
         "templates/ADR.md": ADR_TEMPLATE,
         "templates/CRITIQUE.md": CRITIQUE_TEMPLATE,
+        "templates/delivery.json": DELIVERY_TEMPLATE,
+        "templates/design.md": DESIGN_TEMPLATE,
+        "templates/contracts.md": CONTRACTS_TEMPLATE,
         "agents/glossary.md": GLOSSARY,
         "agents/code-standards.md": CODE_STANDARDS,
         "agents/domain.md": DOMAIN,

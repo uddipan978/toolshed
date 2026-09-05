@@ -7,6 +7,21 @@ description: G1 of the Foreman lifecycle — decomposes a clarified requirement 
 
 Turn `.foreman/REQUIREMENTS.md` into files a fresh session can execute cold.
 
+Read [delivery.md](../../reference/delivery.md). Choose `product` for an end-to-end
+build or `targeted` for a scoped change. Write `delivery.json` from its template.
+For a product, define the first useful MVP and the later production exit criteria.
+Do not schedule the entire repository backlog as one delivery. Commit small sprints
+with a concrete demo, task scope and a total turn budget that includes G4 and G5.
+
+For UI products, the first sprint builds a **static frontend preview in parallel
+with the backend**, followed by explicit wiring tasks. Create `design.md` and
+`contracts.md` before splitting workers: layout, real journey, UI states,
+accessibility, API/response/error shapes and representative fixtures. Reuse available
+design skills when helpful; record the direction selected within user authorization.
+The preview must run without the backend and must be shown to the user after its
+browser pass. Label mocked behavior. Wiring depends on frontend and backend readiness.
+Do not postpone all visual progress until the backend is complete.
+
 **Do not start while any clarification marker remains in REQUIREMENTS.md.** Go back to G0.
 
 ## Modules
@@ -37,9 +52,10 @@ Three sizing rules, all of which matter:
 **One task fits in one fresh context window.** If a task needs more, it is two tasks. This
 is the constraint that makes handovers rare instead of constant.
 
-**Each task is a vertical slice.** A narrow but *complete* path through every layer, that
-can be demonstrated on its own. Horizontal slices ("do all the database work") produce
-tasks that cannot be verified until everything else lands.
+**Each sprint delivers a vertical slice.** Tasks can be contract-backed frontend,
+backend and wiring tracks so the user sees progress early. Each task has an independent
+verification and demo appropriate to its track. A static preview is useful progress;
+the MVP is not complete until the wiring task proves the real end-to-end journey.
 
 The exception is a wide refactor — renaming a column, retyping a shared symbol. Do not
 force a tracer bullet through that. Sequence it **expand → migrate in batches → contract**,
@@ -62,6 +78,9 @@ something that actually runs, taken from `constitution.md`. A criterion whose Ve
 `# TODO` is not a criterion.
 
 Write **Out of scope** on every task. It is what stops a worker quietly expanding its remit.
+Declare `**Files**`, `**Surface**`, `**Validation**` and `**Track**` as described in
+delivery.md. UI tasks use browser validation even before an app URL is recorded.
+Use `**Milestone** later` for deliberately deferred tasks; do not let them block the MVP.
 
 ## Exit criteria
 
@@ -72,6 +91,8 @@ G1 exit is in [reference/gates.md](../../reference/gates.md). In short:
 - [ ] Every task has a runnable Verify command and checkable acceptance boxes
 - [ ] Dependency order holds — no task needs output from a later one
 - [ ] `[P]` markers name genuinely disjoint file sets
+- [ ] `delivery.py check` passes: milestones, sprint scope, preview/wiring, dependencies and budgets
+- [ ] The first visible result and how the user can open it are explicit
 
 Regenerate the views, append to `.foreman/log.md`, rewrite `.foreman/work/memory.md`
 (**Gate** `G2`; live traps under *Immediate attention*), run `--check-memory`
@@ -80,6 +101,6 @@ in this session — the planner attacking its own plan is how G2 isolation dies.
 
 ```bash
 PLUGIN_ROOT="${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-python3 "$PLUGIN_ROOT/scripts/board.py" --root .foreman
-python3 "$PLUGIN_ROOT/scripts/dashboard.py" --root .foreman
+python3 "$PLUGIN_ROOT/scripts/delivery.py" check --root .foreman
+python3 "$PLUGIN_ROOT/scripts/refresh.py" --root .foreman
 ```

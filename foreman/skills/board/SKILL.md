@@ -8,12 +8,10 @@ allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(python3 ${GRO
 
 ```bash
 PLUGIN_ROOT="${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-python3 "$PLUGIN_ROOT/scripts/board.py" --root .foreman
-python3 "$PLUGIN_ROOT/scripts/dashboard.py" --root .foreman --static
-python3 "$PLUGIN_ROOT/scripts/dashboard.py" --root .foreman
+python3 "$PLUGIN_ROOT/scripts/refresh.py" --root .foreman
 ```
 
-Run all three. They are the same data for three different audiences:
+One command regenerates all four views:
 
 | File | Tracked | Who it is for |
 |---|---|---|
@@ -43,6 +41,10 @@ volatile detail and never ships.
 Read the task files and the session `status.json` files, then tell the user:
 
 - Which gate the run is at, and what it is waiting on.
+- Active sprint/MVP: committed, delivered, added/removed scope and remaining G4/G5.
+- The current preview/demo path, which data is mocked, and what is wired to real services.
+- Worker admission: RAM/CPU pressure, paused capacity and held queue jobs.
+- Pending durable events and the age of the last supervisor heartbeat/view refresh.
 - Tasks done / total, and anything blocked with the reason.
 - Live sessions: context %, spend against budget, time against deadline.
 - Dirty sessions: uncommitted paths, especially any stopped worker requiring `SALVAGE`.

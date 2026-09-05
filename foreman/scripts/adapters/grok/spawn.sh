@@ -20,6 +20,9 @@ BASE=""
 COMPACT_PCT="${FOREMAN_COMPACT_PCT:-55}"
 ADAPTER_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS_DIR="$(cd "$ADAPTER_DIR/../.." && pwd)"
+if [[ "${FOREMAN_MANAGED_LAUNCH:-}" != "1" ]]; then
+  FOREMAN_HARNESS=grok exec python3 "$SCRIPTS_DIR/dispatch.py" "$@"
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -114,7 +117,7 @@ GROK_ARGS=(
 python3 - "$SDIR/status.json" "$SDIR/worktree.json" "$NAME" "$AGENT" \
   "$SESSION_ID" "$ROOT" "$STARTED" "$DEADLINE_TS" "$BUDGET" "$TURNS" \
   "$COMPACT_PCT" <<'PY'
-import json, sys
+import json, os, sys
 (out, prep_path, name, agent, session_id, root, started, deadline,
  budget, turns, compact) = sys.argv[1:]
 prep = json.load(open(prep_path))
@@ -129,6 +132,8 @@ status = {
     "budget_usd": float(budget), "max_turns": int(turns),
     "compact_pct": float(compact), "state": "starting", "pokes": 0,
     "harness": "grok",
+    "task_ids": os.environ.get("FOREMAN_TASK_IDS", "").split(",") if os.environ.get("FOREMAN_TASK_IDS") else [],
+    "sprint": os.environ.get("FOREMAN_SPRINT", ""),
 }
 open(out, "w").write(json.dumps(status, indent=2) + "\n")
 PY
@@ -139,18 +144,16 @@ FOREMAN_ROOT="$ROOT" \
 FOREMAN_WORKTREE_ROOT="$CWD" \
 FOREMAN_HARNESS=grok \
 GROK_ASK_USER_QUESTION_TIMEOUT_SECS=300 \
-nohup grok "${GROK_ARGS[@]}" \
+nohup python3 "$SCRIPTS_DIR/runner.py" --session-dir "$SDIR" -- grok "${GROK_ARGS[@]}" \
   >"$SDIR/stream.jsonl" 2>"$SDIR/stderr.log" &
 PID=$!
 
-python3 - "$SDIR/status.json" "$PID" <<'PY'
-import json, os, sys
-path, pid = sys.argv[1], int(sys.argv[2])
-data = json.load(open(path))
-data.update(pid=pid, state="running")
-tmp = path + ".tmp"
-open(tmp, "w").write(json.dumps(data, indent=2) + "\n")
-os.replace(tmp, path)
+python3 - "$SCRIPTS_DIR" "$SDIR" "$PID" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from ops import update_session
+update_session(Path(sys.argv[2]), runner_pid=int(sys.argv[3]))
 PY
 
 echo "spawned $NAME  pid=$PID  session=$SESSION_ID  cwd=$CWD  base=$BASE_REF  harness=grok"

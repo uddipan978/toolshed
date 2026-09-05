@@ -1,212 +1,121 @@
 ---
 name: run
-description: G3–G5 of the Foreman lifecycle — acts as the manager, spawning developer, tester and beta-tester sessions, supervising them against budgets and deadlines, and routing failures back for correction. Use once the plan has been critiqued and tasks are ready to build.
+description: Run an active Foreman sprint through development, independent testing and beta review, with resource-aware worker dispatch, durable events, recovery and automatic progress views. Also handles targeted changes with a thin sprint.
 allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(bash ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(python3 ${GROK_PLUGIN_ROOT}/scripts/*), Bash(bash ${GROK_PLUGIN_ROOT}/scripts/*), Bash(${GROK_PLUGIN_ROOT}/scripts/*), Bash(git worktree *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git branch *)
 ---
 
-# G3–G5 — Run the work
+# Run an active sprint
+
+Read [gates.md](../../reference/gates.md) and
+[delivery.md](../../reference/delivery.md) before dispatch. You coordinate the
+work; workers implement scoped product changes. User instructions and existing
+authorization determine scope and permission.
 
 ```bash
 PLUGIN_ROOT="${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+python3 "$PLUGIN_ROOT/scripts/delivery.py" check --root .foreman
+python3 "$PLUGIN_ROOT/scripts/verify_gate.py" --g2-clear --root .foreman
+python3 "$PLUGIN_ROOT/scripts/events.py" --root .foreman
 ```
 
-Worker launch: [reference/harness.md](../../reference/harness.md). You are the manager now. **You coordinate; you do not implement.** The moment you start
-writing product code you have taken a worker's job and stopped watching everyone else.
+Start the planned sprint with `delivery.py start SNN` if none is active. Do not
+reinterpret historical backlog as the current MVP. Resolve pending events and
+dirty stopped worktrees before claiming their work survived.
 
-You write only inside `.foreman/`. Status tokens and who may write them:
-[reference/task-format.md](../../reference/task-format.md). You set `[>]` `[~]`
-`[b]` `[x]` `[!]` `[?]`. Developers set `[t]` on Verify pass; you may also set
-`[t]` when spawning the tester. Only you write `[x]`, and only after G5.
+## Dispatch
 
-## Sizing — before you spawn anything
+Write each brief using [delegation-brief.md](../../reference/delegation-brief.md).
+All four sections are enforced at launch. Name the task by `**Task file**`, not
+by guessing an ID from a session name. Beta briefs name `**Tasks** T-NN-NN, ...`.
+Use a new session name for each attempt so evidence and exit records survive.
 
-Multi-agent runs cost roughly 15× a single session, and coding parallelises far worse than
-research does. So:
-
-- **3–5 concurrent workers, never more.** Three focused workers beat five scattered ones.
-- **Fan out only across `[P]` tasks with genuinely disjoint file sets.** Two workers in
-  one file is a merge conflict you scheduled deliberately.
-- **Scale to the request.** A small change gets one session through thin gates, not a fleet.
-
-## Start the supervisor once
+For UI products, queue the static frontend preview alongside backend work with
+disjoint file ownership and the shared `contracts.md`. The preview must not wait
+on the backend. Queue wiring separately with both dependencies. Present the preview
+as soon as it passes browser G4, stating which data is mocked and what is connected.
 
 ```bash
-python3 "$PLUGIN_ROOT/scripts/supervise.py" --root .foreman --interval 30
+python3 "$PLUGIN_ROOT/scripts/scheduler.py" enqueue --root .foreman \
+  --name s01-preview --agent foreman-developer --brief PATH
+python3 "$PLUGIN_ROOT/scripts/scheduler.py" run --root .foreman --interval 30
 ```
 
-Run it with the Monitor tool, `persistent: true`. Every line it emits is an event to act
-on. Never poll workers with "are you done?" — the supervisor is how you know.
+Run the loop with the host's persistent monitoring mechanism. It owns resource
+checks, slot filling, evidence reconciliation and view refresh. One loop per
+project. Do not add a second supervisor or a project-local fill-slots script.
+Direct `spawn.sh` uses the same guarded path. It handles status/session bookkeeping
+and refuses invalid gates, scope, dependencies, capacity or resource conditions.
 
-## Brief, then spawn
+## React and reconcile
 
-Write `.foreman/work/sessions/<name>/brief.md` carrying **all four fields**. A brief missing any
-of them produces duplicated work or silent gaps. A worked example of each field is in
-[reference/delegation-brief.md](../../reference/delegation-brief.md) — read it before writing
-your first brief of the run:
-
-```markdown
-**Task file** .foreman/modules/M01-auth/tasks/T-01-02-session-cookie.md
-
-## Objective
-<what done looks like, one paragraph>
-
-## Output format
-<which files to write, and where>
-
-## Tools and sources
-<what to use; what is already established so it isn't re-derived>
-<name the skills for this task: `mattpocock-skills:tdd` for the red/green loop,
-`mattpocock-skills:diagnosing-bugs` when something fails for a non-obvious reason>
-
-## Boundaries
-<explicitly out of scope; files not to touch>
-```
-
-Then:
+Notifications are hints. Read the durable pending events on resume and at least
+every five minutes, even when the monitor is quiet:
 
 ```bash
-"$PLUGIN_ROOT/scripts/spawn.sh" --name dev-m01-02 --agent foreman-developer \
-  --brief .foreman/work/sessions/dev-m01-02/brief.md --root .foreman \
-  --budget 15 --turns 120 --deadline 60
+python3 "$PLUGIN_ROOT/scripts/events.py" --root .foreman
 ```
 
-Name workers for their task (`dev-m01-02`, `test-m01-02`, `beta-m01`). The name is the
-address other sessions use to reach them. Set the task file's `**Session**` field to
-match, and `**Status**` to `[~]` for a developer spawn.
+- `DONE` / `READY`: inspect the current evidence and verdict, then advance or route.
+  A complete failure report is ready for disposition, not a passing gate.
+- `REVIEW`: inspect `completion_problems`; resume only the missing work.
+- `CHECKPOINT` / `SALVAGE`: preserve the worktree. Inspect recovery manifest and
+  commit explicit scoped paths before any successor or cleanup.
+- `POKE` / `STUCK` / `OVERDUE`: read progress and process state, then unblock or
+  stop and hand over. A stop must preserve uncommitted work first where possible.
+- `RESOURCE`: launch admission paused/recovered. Let existing workers checkpoint;
+  do not kill them to free a slot.
+- `SPRINT_BUDGET`: report remaining work and gate costs; amend/replan within user
+  scope. Do not mark incomplete work passed.
 
-## Reacting to the supervisor
+After acting, acknowledge the event with `events.py --ack ID --disposition '...'`.
+Give the user meaningful progress at least every five minutes during unattended
+runs: visible result, current gate, real blockers and next demonstrable outcome.
+State how many G4/G5 sessions remain when asked to bring all work to beta/done.
 
-| Event | What you do |
-|---|---|
-| `POKE` | Claude: `SendMessage` that worker for a one-line status. Grok: log only — `-p` workers have no inbound channel. Do not replace it yet. |
-| `STUCK` | Read its `progress.md` and the tail of `stream.jsonl`. Unblock by message, or stop and respawn from its handover. |
-| `OVERDUE` | Stop it. Read the newest `handover-N.md`. Spawn a successor seeded from that file. |
-| `COMPACT` | Informational — it self-compacted and wrote a handover. No action. |
-| `CHECKPOINT` | At 40% of the turn cap, the worktree is still dirty. Tell the worker to commit explicit task-scoped paths now; never `git add -A`. |
-| `SALVAGE` | A stopped worker has uncommitted files. Do not remove, integrate, or claim its branch preserved them. Inspect and commit explicit paths, then base the successor on that branch. |
-| `TURNS` | It has used 80% of its turn cap. Narrow the remaining scope or prepare a successor. |
-| `BUDGET` | Its cap was reached. Wait for `READY`/`REVIEW`; choose a successor only if the completion evidence names missing work. |
-| `DONE` | **Verify before advancing.** Open the task file in `status.json`'s `cwd`: are the acceptance boxes checked, does the Activity log carry real Verify output, is status `[t]`, is the worktree clean, and is the branch ahead of `start_commit`? |
-| `READY` | The process hit a cap/deferred stop, but its completion evidence is valid. Review the verdict, then advance or route exactly as for any completed session; do not redevelop it merely because of the subtype. |
-| `REVIEW` | Read `status.json.completion_problems` and the artefacts. Repair or salvage only what is actually missing; do not equate the process subtype with failed work. |
-| `FAILED` | An ungated process failed. Read `stderr.log` and its result subtype before deciding whether to resume or respawn. |
+## G4 and integration
 
-A worker reporting success is a claim, not evidence. Check the artefact. Advancing a gate
-on a worker's say-so is the most common way systems like this ship defects.
-
-## G4 — Test
-
-When a task's development passes, wait for the supervisor's `DONE` or `READY` event. Its
-branch must be clean and contain a worker commit. Then spawn a tester against that exact
-branch:
+Spawn the independent tester from the actual stopped, clean developer branch:
 
 ```bash
-"$PLUGIN_ROOT/scripts/spawn.sh" --name test-m01-02 --agent foreman-tester \
-  --brief .foreman/work/sessions/test-m01-02/brief.md --root .foreman \
-  --base foreman/dev-m01-02 --deadline 45
+"$PLUGIN_ROOT/scripts/spawn.sh" --name test-s01-preview --agent foreman-tester \
+  --brief PATH --root .foreman --base foreman/s01-preview
 ```
 
-`--base` is optional for the normal naming pair: `test-m01-02` automatically resolves
-to `foreman/dev-m01-02`. Keep it explicit in unusual/fix-round names. Spawn verifies the
-predecessor is stopped and clean, that a developer predecessor committed work after its
-own `start_commit`, and that the new branch contains the recorded base commit. A tester
-predecessor may add no commit because its evidence lives in the session directory. A
-failed check is a rescue, not a reason to fall back to HEAD.
+Testers record cases before execution and grow results during execution. UI tasks
+require real browser evidence. See [evidence-format.md](../../reference/evidence-format.md).
+An overall pass cannot contain failed or unrun cases or unchecked acceptance.
 
-Confirm the task is `[t]` in the developer worktree. Do not mirror-edit the manager
-checkout's older copy before integration; that creates an avoidable task-file conflict.
-A failure routes back to the developer who wrote it, with the tester's reproduction steps in the new brief. Then
-it is re-tested — a fix is not verified by the person who made it. Base a fix worker on
-the failed tester branch so it inherits the exact tree and any committed regression test:
+Integrate passing G4 promptly with `integrate.sh --name TEST_SESSION --root .foreman`.
+The script archives evidence, validates the replay, records `[b]` and refreshes views
+before safe cleanup. Preserve conflicts for explicit resolution; never union task
+headers. Only structured Activity evidence can be combined after inspecting both sides.
 
-```bash
-"$PLUGIN_ROOT/scripts/spawn.sh" --name dev-m01-02-fix-1 --agent foreman-developer \
-  --brief .foreman/work/sessions/dev-m01-02-fix-1/brief.md --root .foreman \
-  --base foreman/test-m01-02
-```
+For a failed acceptance criterion, reopen the same task with a new developer session,
+`--reason` and `--base foreman/FAILED_TEST_SESSION`, then retest independently.
+Optional findings go through `findings.py` into the known-issues ledger. Do not turn
+severity 0–2 observations into blocking tasks. An acceptance failure remains blocking
+at any severity; do not weaken the criterion to satisfy a hook.
 
-Testers write `testcases.md` and `results.md` to
-[reference/evidence-format.md](../../reference/evidence-format.md); they do not set
-`[x]`. A `fail` or `could-not-run` verdict is valid evidence and may stop—the manager
-routes it. Missing case outcomes may not stop.
+## G5 and sprint review
 
-After G4 **passes**, integrate the tested branch first, then set the manager copy to
-`[b]`. G5 always runs (`--has-ui` only selects the path). `[x]` is after G5, never
-after the developer.
+Review the integrated user journey, scoped to the active sprint. Beta can cover a
+coherent set of tasks without waiting for future work in the same module. UI/no-UI
+comes from explicit task/plan surface, never from a missing app URL. A missing URL
+for a UI product is a setup blocker.
 
-## Integrate as soon as a task passes G4
+Beta writes `beta-review.md` and does not change product files. Advance with
+`state.py --finish-beta SESSION --root .foreman`; it checks scope, current product
+and evidence before writing `[x]`. Known issues are disclosed, not silently accepted.
 
-```bash
-"$PLUGIN_ROOT/scripts/integrate.sh" --name test-m01-02 --root .foreman
-```
+Run the sprint demo, record command/output/verdict, then close with
+`delivery.py close --demo-evidence PATH`. Report committed/done scope, additions,
+remaining tests and what the user can run now. Continue the next sprint within the
+authorized objective. Final production handoff also requires the production checks.
 
-This integrates the **tested branch**. The tester branch contains the developer commit it
-was based on, plus any committed regression spec. The script checks recorded ancestry,
-then rebases only worker-produced commits after `lineage_start_commit` onto the manager
-branch and fast-forwards it. That deliberately excludes the synthetic `.foreman` snapshot
-that otherwise conflicts with normal manager status/log edits. It refuses live or dirty
-worktrees, removes the tester worktree, and cleans the stopped/clean developer predecessor
-when safe.
+## State and views
 
-**Do this per task, not at the end of the run.** A root worker with no `--base` starts
-from the manager's current HEAD. A successor that must start before its predecessor is
-integrated needs an explicit `--base foreman/<predecessor>`; tester names get that base
-automatically. Incremental integration keeps the dependency order planned in G1 true on
-disk and keeps the main branch green.
-
-A merge conflict here is reported, never auto-resolved, and the merge is aborted so the
-base branch is untouched. A product-file conflict may mean overlapping `[P]` scope or a
-stale base. A `.foreman/`-only conflict is coordination/bookkeeping drift—not evidence of
-a decomposition failure. Preserve task evidence and regenerate manager-owned log/boards.
-
-## G5 — Beta
-
-Only once every task in the module passes G4. One beta session per module, not per task —
-this gate is about the feature as a whole. G5 always runs; `--has-ui` selects the path
-(see [reference/gates.md](../../reference/gates.md)).
-
-```bash
-python3 "$PLUGIN_ROOT/scripts/verify_gate.py" --has-ui --root .foreman
-```
-
-Put `ui` or `no-ui` in the brief. For `ui`, tell it how to run the app (from
-`constitution.md`) and point at the user journey — **and nothing about the
-implementation.** For `no-ui`, give it the recorded run/test commands and the same
-journey; no browser, no Lighthouse, no `/impeccable`.
-
-```bash
-"$PLUGIN_ROOT/scripts/spawn.sh" --name beta-m01 --agent foreman-beta-tester \
-  --brief .foreman/work/sessions/beta-m01/brief.md --root .foreman --deadline 45
-```
-
-Severity 3–4 findings route back as new tasks. Severity 0–2 go to the user at G6 as
-known-and-accepted, not silently dropped. After G5 passes, set the module's tasks to
-`[x]`. The beta tester writes only under `.foreman/work/`; `beta-review.md` follows
-[reference/evidence-format.md](../../reference/evidence-format.md) and is enforced by
-the Stop hook.
-
-## Keep the board honest
-
-After every status change:
-
-```bash
-python3 "$PLUGIN_ROOT/scripts/board.py" --root .foreman
-python3 "$PLUGIN_ROOT/scripts/dashboard.py" --root .foreman
-```
-
-Workers forget to close out tasks — this is the single most common coordination failure.
-While a branch is unintegrated, inspect its task through the session `cwd`; the manager
-checkout may correctly remain `[~]`. Do not copy-edit it to `[t]` before the tested branch
-lands. After integration, reconcile the manager copy to `[b]`. A file at `[x]` whose G5
-has not passed is a gate error—revert it to `[b]`.
-
-Append every spawn, transition, failure and fix to `.foreman/log.md`. Rewrite
-`.foreman/work/memory.md` the same moment — **Gate** `G3` until every task is
-`[x]`, *What is in flight* matching the workers you just spawned, live traps
-under *Immediate attention*. `--check-memory` must exit 0 before you compact
-or end the session.
-
-## When you need the user
-
-Recommended option first, labelled `(Recommended)`. On a timeout, take it, write
-`.foreman/decisions/DNN-<slug>.md` with `auto_selected: true`, and continue. Never stall.
+Never edit manager status tokens independently of `state.py`. The managed loop
+repairs generated views; `refresh.py --root .foreman` regenerates all four on demand.
+Raw transcripts remain on disk; the dashboard embeds bounded recent previews.
+Keep manager working memory current with verified branch facts and pending events.
+Workers write their session progress; they must not race to overwrite manager memory.

@@ -1016,6 +1016,12 @@ class WorktreeHandoffTests(unittest.TestCase):
             "# Activity log\n",
         )
 
+    def test_explicit_manager_base_still_carries_current_task_inputs(self):
+        (self.root / "task.md").write_text(self.TASK_IN_PROGRESS)
+        dev = prepare_worker_worktree(self.project, self.root, name="dev-explicit",
+                                      agent="foreman-developer", harness="claude", requested_base="master")
+        self.assertEqual((Path(dev["cwd"]) / ".foreman/task.md").read_text(), self.TASK_IN_PROGRESS)
+
     def test_dirty_predecessor_is_not_claimed_as_preserved(self):
         dev = self._prepare_dev()
         self._commit_dev_work(dev)

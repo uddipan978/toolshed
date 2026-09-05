@@ -8,6 +8,8 @@
 
 This file is the source of truth for entry, exit, severity, and who owns each
 gate. Skills describe the procedure; they do not restate these criteria.
+Delivery scope and the executable runtime contract are in [delivery.md](delivery.md).
+G3–G6 operate on the active sprint, not the entire future product backlog.
 
 ## The rule about skipping
 
@@ -24,7 +26,9 @@ against, do as they ask, and record it in `.foreman/log.md`.
 
 ## Severity (0–4)
 
-Used by G2 findings and G5 beta findings. One scale.
+Used by G2, G4 observations and G5 findings. One scale. A failed acceptance
+criterion remains blocking at any score; optional observations do not automatically
+become task files. `findings.py` records and deduplicates them before disposition.
 
 | Score | Means | G2 | G5 |
 |---|---|---|---|
@@ -44,6 +48,7 @@ Used by G2 findings and G5 beta findings. One scale.
 - [ ] Every acceptance criterion in EARS form and mechanically checkable
 - [ ] `constitution.md` Commands table has real commands
 - [ ] The user has confirmed the requirement is understood
+- [ ] Product/targeted mode, MVP outcome (for products), surface and first visible demo recorded
 
 ## G1 — Plan
 
@@ -53,10 +58,12 @@ Used by G2 findings and G5 beta findings. One scale.
 **Exit:**
 - [ ] Every requirement traces to ≥1 task; every task traces back to a requirement
 - [ ] Each task fits one fresh context window
-- [ ] Each task is a vertical slice (except a wide refactor, sequenced expand→migrate→contract)
+- [ ] Each sprint demonstrates a vertical slice; UI preview/backend tracks use a shared contract and explicit wiring dependencies
 - [ ] Each task has a runnable Verify command and checkable acceptance boxes
 - [ ] Dependency order holds
 - [ ] `[P]` markers name genuinely disjoint file sets
+- [ ] `delivery.py check` passes; product plans have MVP and production milestones
+- [ ] UI product sprint one includes a static frontend preview with no backend dependency
 
 Then return to `/foreman`. Do **not** critique in the planning session.
 
@@ -130,7 +137,9 @@ and set `done` — do not spawn.
 
 ## G3 — Develop
 
-**Entry:** G2 clear (`--g2-clear` exits 0).
+**Entry:** G2 clear, a valid frozen active sprint, complete brief, satisfied
+dependencies, disjoint parallel scope and available RAM/CPU/worker capacity.
+The shared dispatch path enforces these for both manual and scheduled launches.
 **Owner:** `foreman-developer`, one session per task, isolated worktree.
 
 **Exit, per task:**
@@ -156,7 +165,8 @@ A developer marking `[x]` is a defect in the gate, not a completed task.
 
 ## G4 — Test
 
-**Entry:** a task passed G3 (status `[t]`).
+**Entry:** a task passed G3, verified against its stopped developer session and
+content-bound Verify output. A `[t]` marker alone is not sufficient.
 **Owner:** `foreman-tester`, a different session from the developer.
 
 The tester branch must contain the developer branch. `spawn.sh --base <branch>` selects
@@ -167,9 +177,10 @@ or empty predecessor rather than silently falling back to HEAD.
 - [ ] `testcases.md` written **before** execution
 - [ ] Happy path, each boundary, one malformed input, and the error path covered
 - [ ] Browser flows exercised via Playwright MCP where the feature has a UI
+- [ ] Overall pass agrees with every unique case outcome and all acceptance criteria
 - [ ] Anything worth re-running left behind as a committed `.spec.ts`
 - [ ] `results.md` states pass / fail / **could not run** for every case
-- [ ] Manager integrates the tested branch, then sets the manager task copy to `[b]`. G5 always runs; `[x]` is after G5.
+- [ ] Integration validates replay, archives G4 evidence, records `[b]` and refreshes all views before cleanup
 
 A case that could not run is neither pass nor fail. Say so explicitly — silence
 about a skipped case reads as a pass, and that is how defects ship.
@@ -192,8 +203,9 @@ from HEAD.
 
 ## G5 — Beta
 
-**Entry:** every task in the module passed G4.
-**Owner:** `foreman-beta-tester`, one session per module, no implementation knowledge.
+**Entry:** the declared coherent journey scope in the active sprint passed G4.
+**Owner:** `foreman-beta-tester`, no implementation knowledge. A module's future
+backlog does not delay review of the current sprint increment.
 
 G5 **always runs**. It scales to the surface, which is `ui` or `no-ui`:
 
@@ -201,23 +213,23 @@ G5 **always runs**. It scales to the surface, which is `ui` or `no-ui`:
 python3 ${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/verify_gate.py --has-ui --root .foreman
 ```
 
-`ui` means `constitution.md`'s app URL is a real `http://`, `https://`, or
-`localhost` value. Anything else (`_not yet recorded_`, `n/a`, empty) is `no-ui`.
+Managed runs use explicit plan/task surface. A UI task with no runnable app URL
+is a setup blocker. `--has-ui` is a legacy helper; an empty URL cannot waive UI tests.
 
 **Exit, UI:**
 - [ ] The real user journey walked end to end, desktop and mobile widths
 - [ ] Discoverability, trunk test, workflow coherence, error and empty states all assessed
 - [ ] `/impeccable audit` run; Lighthouse run via `chrome-devtools` MCP
 - [ ] Findings scored 0–4 with a specific place and a specific fix each
-- [ ] Severity 3–4 raised as new tasks; 0–2 carried to G6 as known-and-accepted
-- [ ] Manager sets the module's tasks to `[x]`
+- [ ] Severity 3–4 and acceptance failures routed to fixes; 0–2 recorded as known, without claiming user acceptance
+- [ ] `state.py --finish-beta SESSION` verifies scope/evidence and sets its tasks to `[x]`
 
 **Exit, no-UI:**
 - [ ] The user journey in `REQUIREMENTS.md` walked using the recorded run/test commands
 - [ ] Happy path, one malformed input, and the error path exercised
 - [ ] Findings scored 0–4 the same way
 - [ ] Severity 3–4 raised as new tasks; 0–2 carried to G6
-- [ ] Manager sets the module's tasks to `[x]`
+- [ ] `state.py --finish-beta SESSION` verifies scope/evidence and sets its tasks to `[x]`
 
 No browser, no Lighthouse, no `/impeccable` on the no-UI path.
 
@@ -228,7 +240,8 @@ It also rejects a dirty beta worktree or repository commits made during G5.
 
 ## G6 — Handoff
 
-**Entry:** G3, G4 and G5 all passed (every task `[x]`).
+**Entry:** G3, G4 and G5 passed for the active sprint. Run its demo and close it
+through `delivery.py`; final production handoff also requires production release checks.
 **Owner:** the manager.
 
 **Exit:** the user has received what was built, how to run it, what to check by

@@ -5,6 +5,18 @@ critique, build, test, beta-review, hand off — by spawning and supervising ind
 worker sessions with budgets, deadlines, stuck-detection and handover compaction.
 Claude and Grok adapters live under `scripts/adapters/`.
 
+Version 0.5 adds MVP/production milestones, committed sprints and a managed runtime.
+For UI products, the first sprint delivers a static frontend preview **alongside**
+backend development using shared contracts; wiring follows when both are ready.
+Targeted changes use a thin sprint. See [delivery.md](reference/delivery.md) for the
+schema, commands, resource limits and migration of existing runs.
+
+The managed loop owns RAM/CPU admission, worker capacity, queue recovery, task-state
+reconciliation, durable completion events and all four progress views. It reserves
+test capacity, bounds fix rounds and tracks optional findings without continually
+refilling the sprint backlog. G3 records real Verify output against the product
+files; G4/G5 cannot pass with contradictory evidence.
+
 ```
 /foreman add a health-check endpoint
 ```
@@ -29,7 +41,7 @@ Workers: Claude `claude -p`, Grok `grok --prompt-file`. See [reference/harness.m
 | | Gate | Runs as |
 |---|---|---|
 | G0 | Intake — grill until nothing is assumed | main session + `/grilling` |
-| G1 | Plan — modules, tasks, dependencies, `[P]` markers | main session |
+| G1 | Plan — MVP, sprints, frontend/backend contracts, tasks and dependencies | main session |
 | G2 | Critique — isolated attack, then manager disposition; `--g2-clear`; max 4 G2a rounds (`--g2-spawn`) | forked skill (Claude) or `foreman-critic` worker (Grok) |
 | G3 | Develop — one task per session, own worktree | `foreman-developer` |
 | G4 | Test — cases written first, then executed | `foreman-tester` |
@@ -47,8 +59,15 @@ No gate is skipped to save time. A small change gets a thin version of each.
   the supervisor emits `BUDGET` from captured spend. Headless Grok does not honour
   `--worktree`, so the adapter creates `.grok/worktrees/` itself.
 
-Each worker gets its own git worktree and runs with permissions bypassed, so it never
-stalls on a prompt and cannot damage the main checkout.
+Each worker gets its own git worktree and runs with permissions bypassed. Git worktrees
+isolate repository changes, not databases, processes or external services; briefs must
+name the authorized environment and boundaries.
+
+For managed work, `spawn.sh` validates the sprint, gate, brief, file scope and resources,
+then records in-progress status and Session. `scheduler.py run` performs the recurring
+lifecycle checks and refreshes `STATUS.md`, `board.md`, `board.html` and
+`work/dashboard.html`. `refresh.py` regenerates all four on demand. Existing pre-sprint
+runs retain a labelled compatibility launch path until their remaining work is migrated.
 
 `spawn.sh --base <branch>` carries predecessor ancestry into a successor. A normal
 `test-X` worker defaults to `foreman/dev-X`; launch fails rather than falling back to
@@ -57,7 +76,9 @@ G4, Foreman integrates the tester lineage—the exact worker commits tested—no
 developer branch or its synthetic launch snapshot.
 
 `supervise.py` reads the captured `stream-json` — the supported interface — and emits one
-event per state change:
+event per state change. Events are durable until manager acknowledgement; supervisor
+restarts do not replay historical thresholds. Managed workers also record process exits
+independently of notifications. The manager checks the outbox at least every five minutes.
 
 | Event | Manager response |
 |---|---|
@@ -73,6 +94,8 @@ event per state change:
 | `READY` | process ended abnormally, but completion evidence is valid — review its verdict, then advance or route |
 | `REVIEW` | process ended with unresolved gate evidence — inspect `completion_problems`; do not restart blindly |
 | `FAILED` | an ungated process failed; inspect its result subtype |
+| `RESOURCE` | new launches paused/recovered based on laptop RAM and CPU pressure |
+| `SPRINT_BUDGET` | review remaining scope and gates; do not turn incomplete work into a pass |
 
 Compaction fires at 55% via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. A `PreCompact` hook writes
 a handover document; a `SessionStart(compact)` hook injects it into the fresh context.
@@ -95,6 +118,11 @@ with concrete problems when they do not—never a generic failure.
 ├── REQUIREMENTS.md               grilled requirement, EARS acceptance criteria
 ├── constitution.md               non-negotiables + run/build/test commands
 ├── CRITIQUE.md                   G2 findings; gate is `--g2-clear`, not file presence
+├── delivery.json                 product/targeted mode, milestones, sprint scope and limits
+├── design.md / contracts.md      early frontend direction and frontend/backend contract
+├── sprints/S*.json               frozen commitments and explicit scope changes
+├── evidence/<session>/           durable gate reports and receipts
+├── KNOWN-ISSUES.md               deferred observations; not automatically user-accepted
 ├── modules/M*/tasks/T-*.md       one file per task — the source of truth
 ├── decisions/D*.md               HITL ledger, including auto-selected calls
 ├── adr/NNNN-*.md                 architectural decisions
@@ -105,6 +133,8 @@ with concrete problems when they do not—never a generic failure.
 └── work/                        ← GITIGNORED. Agent scratchpad.
     ├── memory.md                 read this first; **Gate** must match `--check-memory`
     ├── sessions/<name>/          brief, progress, status, stream, handovers
+    ├── queue.json / events/      recoverable dispatch and acknowledged event outbox
+    ├── resources.json            RAM/CPU pressure and worker admission reason
     ├── research/  screenshots/  errors/
     └── dashboard.html            live ops console — gauges, alerts, agent transcripts
 ```
@@ -131,9 +161,10 @@ rebuilds both.
 
 ## Sizing
 
-3–5 concurrent workers, 5–6 tasks each. Fan out only across `[P]` tasks with genuinely
-disjoint file sets. Multi-agent runs cost roughly 15× a single session and coding
-parallelises far worse than research does — both are why the ceiling is low.
+Default to 3 concurrent workers, configurable from 1 to 5. RAM/CPU pressure can
+pause new launches below that ceiling, and pending G4 work reserves testing capacity.
+Fan out across `[P]` tasks with declared disjoint file sets. A static frontend and
+backend may proceed together; the contract and wiring dependencies keep them aligned.
 
 ## Skills
 
@@ -149,11 +180,13 @@ parallelises far worse than research does — both are why the ceiling is low.
 - [reference/evidence-format.md](reference/evidence-format.md) — enforced G4/G5 evidence schemas
 - [reference/troubleshooting.md](reference/troubleshooting.md) — known traps and rejected dependencies
 - [reference/harness.md](reference/harness.md) — Claude vs Grok worker adapters
+- [reference/delivery.md](reference/delivery.md) — MVP/sprints, managed loop, recovery and migration
+- [reference/reliability-review.md](reference/reliability-review.md) — observed gaps and implemented corrections
 
 ## Developing
 
 ```bash
-python3 -m unittest -v tests/test_foreman.py
+python3 -m unittest discover -s tests -v
 ```
 
 The suite creates temporary git repositories for the developer → tester → integration

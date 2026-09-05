@@ -31,6 +31,8 @@ from foreman_lib import (  # noqa: E402
     worktree_snapshot,
 )
 from verify_gate import GATED_AGENTS, session_completion_problems  # noqa: E402
+from ops import lock, session_alive, update_session
+from events import publish, pending
 
 QUIET_LOG = 10 * 60
 QUIET_POKE = 15 * 60
@@ -48,10 +50,12 @@ def assess(sdir: Path, now: float) -> dict:
     status = load_json(sdir / "status.json")
     if not status:
         return {}
+    if status.get("integrated_at") or status.get("retired_at"):
+        return {}  # avoid rereading historical transcripts after safe cleanup
     stream = read_stream(sdir / "stream.jsonl")
 
     quiet = now - (stream["last_event_ts"] or status.get("started_at", now))
-    alive = pid_alive(status.get("pid"))
+    alive = session_alive(status)
     deadline_ts = status.get("deadline_ts", 0)
     budget = float(status.get("budget_usd") or 0)
     compact_pct = float(status.get("compact_pct") or 55)
@@ -72,9 +76,12 @@ def assess(sdir: Path, now: float) -> dict:
         )
         repository_snapshot = git_state
 
-    terminated = bool(stream["finished"] or not alive)
+    starting = status.get("state") == "starting" and now - status.get("started_at", now) < 60
+    terminated = bool(not alive and not starting)
     completion_problems: list[str] = []
     termination_subtype = ""
+    if status.get("integrated_at") or status.get("retired_at"):
+        return {}  # archived receipts own these sessions; deleted worktrees are expected
     if terminated:
         # error_max_budget_usd / error_max_turns are real result subtypes.
         termination_subtype = (
@@ -135,19 +142,38 @@ def assess(sdir: Path, now: float) -> dict:
         "turn_pressure": turn_pressure,
         "git": git_state,
         "checkpoint_pressure": checkpoint_pressure,
-        "needs_salvage": bool(dirty and (stream["finished"] or not alive)),
+        "needs_salvage": bool(dirty and terminated),
     }
 
 
-def sweep(root: Path, once: bool = False) -> None:
+def sweep(root: Path, once: bool = False, interval: int = 30, prefix: str = "",
+          regenerate: bool = True) -> None:
     sdirs = sessions_dir(root)
-    seen: dict[str, str] = {}
 
     while True:
+        # Persist deduplication across manager/supervisor restarts. Notifications
+        # are hints; the outbox remains queryable until disposition is acknowledged.
+        seen = load_json(root / "work" / "supervisor.json")
         now = time.time()
+        emitted = 0
+        def announce(line):
+            nonlocal emitted
+            kind, name, detail = line.split(" ", 2)
+            status = load_json(sdirs / name / "status.json")
+            item = publish(root, name, kind, detail.lstrip("— "),
+                           f"{status.get('session_id', '')}:{s if kind in ('DONE', 'READY', 'REVIEW', 'FAILED') else kind}")
+            if emitted < 20:
+                emit(f"{line} [event={item['id']}]")
+                emitted += 1
         if sdirs.is_dir():
             for sdir in sorted(p for p in sdirs.iterdir() if p.is_dir()):
-                a = assess(sdir, now)
+                if not sdir.name.startswith(prefix):
+                    continue
+                try:
+                    a = assess(sdir, now)
+                except (OSError, ValueError, TypeError, KeyError) as exc:
+                    publish(root, sdir.name, "REVIEW", f"cannot assess session: {exc}", "assessment-error")
+                    continue
                 if not a:
                     continue
                 name = a["status"].get("name", sdir.name)
@@ -155,7 +181,7 @@ def sweep(root: Path, once: bool = False) -> None:
 
                 # Persist the live picture so the board, the dashboard and the
                 # manager all read the same numbers.
-                a["status"].update(
+                a["status"] = update_session(sdir,
                     state=s,
                     context_pct=st["context_pct"],
                     context_tokens=st["context_tokens"],
@@ -174,7 +200,6 @@ def sweep(root: Path, once: bool = False) -> None:
                     completion_problems=a["completion_problems"],
                     updated_at=int(now),
                 )
-                save_json(sdir / "status.json", a["status"])
 
                 metrics = (
                     f"ctx={st['context_pct']}% "
@@ -182,19 +207,28 @@ def sweep(root: Path, once: bool = False) -> None:
                     f"turns={st['turns']}"
                 )
 
+                # A copy is recovery material, not a commit. Never remove the
+                # original worktree or tell a successor its branch preserved it.
+                if a["git"]["dirty_paths"] and (a["needs_salvage"] or a["checkpoint_pressure"] or now - a["status"].get("started_at", now) >= 120):
+                    last = a["status"].get("checkpoint_at", 0)
+                    if a["needs_salvage"] or now - last >= 300:
+                        from checkpoint import preserve
+                        recovery = preserve(sdir, a["status"])
+                        update_session(sdir, checkpoint_at=now, recovery=recovery)
+
                 # Threshold crossings are keyed separately from state so a
                 # session cannot re-announce the same condition every sweep.
                 if a["needs_salvage"] and seen.get(f"{name}:salvage") != "hit":
                     seen[f"{name}:salvage"] = "hit"
                     paths = ", ".join(a["git"]["dirty_paths"][:6])
-                    emit(
+                    announce(
                         f"SALVAGE {name} — worker stopped with uncommitted work: {paths}. "
                         "Do not integrate, remove the worktree, or claim the branch preserved it."
                     )
                     append_log(root, f"`{name}` stopped with uncommitted work requiring salvage")
                 elif a["checkpoint_pressure"] and seen.get(f"{name}:checkpoint") != "hit":
                     seen[f"{name}:checkpoint"] = "hit"
-                    emit(
+                    announce(
                         f"CHECKPOINT {name} — {st['turns']}/{a['status'].get('max_turns')} "
                         "turns used with uncommitted work. Commit explicit task-scoped paths now."
                     )
@@ -204,20 +238,21 @@ def sweep(root: Path, once: bool = False) -> None:
                         "with uncommitted work",
                     )
 
-                if a["over_context"] and seen.get(f"{name}:ctx") != "hit":
+                terminal = s.split(":")[0] in ("done", "ready", "review", "stopped")
+                if not terminal and a["over_context"] and seen.get(f"{name}:ctx") != "hit":
                     seen[f"{name}:ctx"] = "hit"
-                    emit(f"COMPACT {name} — crossed {a['status'].get('compact_pct')}% context, {metrics}")
+                    announce(f"COMPACT {name} — crossed {a['status'].get('compact_pct')}% context, {metrics}")
                     append_log(root, f"`{name}` crossed compaction threshold — {metrics}")
 
-                if a["turn_pressure"] and seen.get(f"{name}:turns") != "hit":
+                if not terminal and a["turn_pressure"] and seen.get(f"{name}:turns") != "hit":
                     seen[f"{name}:turns"] = "hit"
-                    emit(f"TURNS {name} — {st['turns']}/{a['status'].get('max_turns')} turns used, "
+                    announce(f"TURNS {name} — {st['turns']}/{a['status'].get('max_turns')} turns used, "
                          f"{metrics}. It may not finish; consider narrowing the remaining scope.")
                     append_log(root, f"`{name}` passed 80% of its turn cap — {metrics}")
 
-                if a["over_budget"] and seen.get(f"{name}:budget") != "hit":
+                if not terminal and a["over_budget"] and seen.get(f"{name}:budget") != "hit":
                     seen[f"{name}:budget"] = "hit"
-                    emit(f"BUDGET {name} — spend cap reached, {metrics}")
+                    announce(f"BUDGET {name} — spend cap reached, {metrics}")
                     append_log(root, f"`{name}` hit budget cap — {metrics}")
 
                 if seen.get(name) == s:
@@ -226,20 +261,20 @@ def sweep(root: Path, once: bool = False) -> None:
 
                 if s == "quiet":
                     a["status"]["pokes"] = a["status"].get("pokes", 0) + 1
-                    save_json(sdir / "status.json", a["status"])
-                    emit(f"POKE {name} — no output for {int(a['quiet'] // 60)}m, {metrics}")
+                    update_session(sdir, pokes=a["status"]["pokes"])
+                    announce(f"POKE {name} — no output for {int(a['quiet'] // 60)}m, {metrics}")
                 elif s == "stuck":
-                    emit(f"STUCK {name} — no output for {int(a['quiet'] // 60)}m, {metrics}. Decide: continue or respawn.")
+                    announce(f"STUCK {name} — no output for {int(a['quiet'] // 60)}m, {metrics}. Decide: continue or respawn.")
                     append_log(root, f"`{name}` flagged stuck after {int(a['quiet'] // 60)}m")
                 elif s == "overdue":
-                    emit(f"OVERDUE {name} — past deadline, {metrics}. Stop and hand over.")
+                    announce(f"OVERDUE {name} — past deadline, {metrics}. Stop and hand over.")
                     append_log(root, f"`{name}` passed deadline — {metrics}")
                 elif s == "done":
-                    emit(f"DONE {name} — {metrics}")
+                    announce(f"DONE {name} — {metrics}")
                     append_log(root, f"`{name}` completed — {metrics}")
                 elif s.startswith("ready:"):
                     subtype = s.split(":", 1)[1]
-                    emit(
+                    announce(
                         f"READY {name} — gates pass despite {subtype}, {metrics}. "
                         "Review the verdict, then advance or route it."
                     )
@@ -247,15 +282,24 @@ def sweep(root: Path, once: bool = False) -> None:
                 elif s.startswith("review:"):
                     subtype = s.split(":", 1)[1]
                     detail = a["completion_problems"][0] if a["completion_problems"] else "inspect evidence"
-                    emit(f"REVIEW {name} — {subtype}: {detail}, {metrics}")
+                    announce(f"REVIEW {name} — {subtype}: {detail}, {metrics}")
                     append_log(root, f"`{name}` needs review after {subtype} — {metrics}")
                 elif s.startswith("stopped:"):
-                    emit(f"FAILED {name} — {s.split(':', 1)[1]}, {metrics}")
+                    announce(f"FAILED {name} — {s.split(':', 1)[1]}, {metrics}")
                     append_log(root, f"`{name}` stopped: {s.split(':', 1)[1]} — {metrics}")
 
+        save_json(root / "work" / "supervisor.json", seen)
+        outstanding = pending(root, prefix)
+        previous = load_json(root / "work" / "heartbeat.json")
+        if now - previous.get("emitted_at", 0) >= 300:
+            emit(f"HEARTBEAT foreman — {len(outstanding)} unacknowledged events; inspect events.py. Supervisor sweep completed.")
+            save_json(root / "work" / "heartbeat.json", {"emitted_at": now, "pending": len(outstanding)})
+        if regenerate:
+            from refresh import refresh
+            refresh(root)
         if once:
             return
-        time.sleep(args.interval)
+        time.sleep(interval)
 
 
 if __name__ == "__main__":
@@ -263,11 +307,13 @@ if __name__ == "__main__":
     ap.add_argument("--root", default=".foreman")
     ap.add_argument("--interval", type=int, default=30)
     ap.add_argument("--once", action="store_true", help="single sweep, then exit")
+    ap.add_argument("--prefix", default="", help="session name prefix; never filter by live PID")
     args = ap.parse_args()
     root = Path(args.root).resolve()
     if not root.exists():
         sys.exit(f"supervise.py: no such directory: {root}")
     try:
-        sweep(root, once=args.once)
+        with lock(root, "supervisor", blocking=False):
+            sweep(root, once=args.once, interval=max(1, args.interval), prefix=args.prefix)
     except KeyboardInterrupt:
         pass

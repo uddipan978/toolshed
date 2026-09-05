@@ -26,13 +26,16 @@ Read, in this order, stopping when you have enough:
 
 ## While you work
 
-You are in your own git worktree on your own branch. Nothing you do can damage the main
-checkout, so work decisively.
+You are in your own git worktree on your own branch. Worktrees isolate Git changes;
+they do not isolate databases, processes or external services. Use the assigned test
+environment and stay within the task's declared files and authorized systems.
 
-Append anything the next agent would need to `$FOREMAN_ROOT/work/memory.md` — the
-manager's file, not a worktree copy — a trap you hit, a wrong assumption you
-corrected, something you changed that another task depends on. Put anything that
-blocks work under **Immediate attention** with a 🔴.
+Record cross-task findings in your session `progress.md` and report them to the
+manager. The manager owns shared memory; parallel workers must not overwrite it.
+
+For frontend preview tasks, use `design.md` and `contracts.md`, render realistic
+fixtures behind the agreed adapter, and leave clear wiring points. Deliver a runnable
+journey without waiting for the backend. Do not claim mock behavior is production wiring.
 
 Keep `progress.md` in your session directory current — one short section per meaningful
 step: what you did, what you learned, what is left. This is not busywork. When your
@@ -51,7 +54,14 @@ touching them, that is a finding — report it, don't quietly expand your remit.
 G3 is done when **every acceptance box is checked and its Verify command has actually
 run and passed**. Not when the code looks right. Not when you believe it works.
 
-Run the Verify command. Paste its real output into the task file's Activity log. If it
+For a managed session, execute the task's Verify through the plugin:
+
+```bash
+python3 "${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/verify.py" --session-dir "$FOREMAN_SESSION_DIR"
+```
+
+This records actual output and binds the result to the scoped product files. Rerun
+after changing those files. Paste the real output into the task Activity log. If it
 fails, you are not done — fix it or report a blocker.
 
 Then update the task file: status `[t]`, acceptance boxes ticked, Activity log appended.
@@ -63,6 +73,11 @@ task-scoped paths (`git add path/to/file ...`), inspect `git status`, then commi
 use `git add -A` or `git add .`** — browser probes and tool scratch are not product work.
 The Stop hook rejects a dirty worktree or a branch with no worker commit because a tester
 or successor cannot inherit uncommitted work.
+
+Commit earlier too: after the first coherent slice, after each passed acceptance/
+Verify boundary, and before yielding, compaction or stopping. The supervisor makes
+recovery copies while work is dirty; those copies do not put changes on the branch.
+Inspect `git rev-list --count <start_commit>..HEAD` before claiming work is preserved.
 
 ## Reporting back
 

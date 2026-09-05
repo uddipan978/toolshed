@@ -22,6 +22,10 @@ fixed in advance rather than fitted to whatever the code happens to do.
 
 Cover, at minimum: the happy path, each stated boundary, one malformed input, and the
 error path. A suite that only proves the happy path proves almost nothing.
+Rank cases by risk and which downstream work depends on their result. Create the
+results file before the first probe and update it immediately after each result.
+At 70% of the turn budget stop adding probes; record unreached cases as
+`could-not-run` with the reason. A bounded, complete report is actionable.
 
 ## Running
 
@@ -42,6 +46,10 @@ For browser work, Playwright MCP is configured with `--caps=testing --headless -
 
 For performance, accessibility or source-mapped console errors, use the `chrome-devtools`
 MCP — that is the measurement tool, Playwright is the driving tool.
+Focus, contrast, layout and animation claims need real browser evidence, not jsdom.
+Wait for transitions to settle and record measurement conditions. Use positive
+controls. Test the whole acceptance promise (including contenteditable, summary and
+iframe focus when relevant), not just element types used by today's screens.
 
 ## Reporting
 
@@ -56,6 +64,9 @@ final message which cases passed, which failed, and which task each failure belo
 A failed criterion stays failed. Do not tick it merely to satisfy a hook: the Stop gate
 validates the evidence files, not a passing outcome, and the manager routes a complete
 failure report back to development.
+Distinguish failed acceptance from optional observations. Score findings 0–4; the
+manager uses the deduplicated findings ledger. A consistency nit does not become a
+new blocking task, but falsified acceptance remains blocking at any score.
 
 If you add a rerunnable `.spec.ts`, commit it with an explicit path and leave the worktree
 clean. Never use `git add -A` or `git add .`.

@@ -54,7 +54,7 @@ GATED_AGENTS = frozenset({
 TASK_FILE_LINE = re.compile(r"^\*\*Task file\*\*\s*(.+)$", re.M)
 CASE_HEADING = re.compile(r"^##\s+(TC-\d+)\b.*$", re.M | re.I)
 BETA_FINDING = re.compile(r"^###\s+(B-\d+)\b.*$", re.M | re.I)
-FIELD_LINE = re.compile(r"^\*\*([^*]+)\*\*\s*(.*?)\s*$", re.M)
+FIELD_LINE = re.compile(r"^\*\*([^*]+)\*\*[ \t]*(.*?)[ \t]*$", re.M)
 
 
 def _field(text: str, name: str) -> str:
@@ -92,6 +92,7 @@ def task_gate_problems(agent: str, brief: str, cwd: Path) -> list[str]:
         return problems
 
     text = path.read_text(errors="replace")
+    problems.extend(f"{path.name}: {p}" for p in parse_task(path).get("problems", []))
     acc = re.search(r"^##\s+Acceptance.*?$(.*?)(?=^##\s|\Z)", text, re.M | re.S)
     if not acc:
         problems.append(
@@ -139,7 +140,7 @@ def task_gate_problems(agent: str, brief: str, cwd: Path) -> list[str]:
                 f"Status in {path.name} is `[x]`. Independent test (G4) has not run. "
                 "Set `**Status**` to `[t]`."
             )
-        elif st not in ("in_test", "beta"):
+        elif st != "in_test":
             problems.append(
                 f"Verify passed — set `**Status**` in {path.name} to `[t]`, not `[x]`. "
                 "G4 has not run."
@@ -158,6 +159,8 @@ def tester_evidence_problems(sdir: Path) -> list[str]:
     cases_text = cases_path.read_text(errors="replace")
     case_heads = list(CASE_HEADING.finditer(cases_text))
     case_ids = [x.group(1).upper() for x in case_heads]
+    if len(set(case_ids)) != len(case_ids):
+        problems.append("testcases.md has duplicate case IDs")
     if not case_ids:
         problems.append(
             "testcases.md has no `## TC-NN — ...` cases; use stable case IDs before execution"
@@ -175,12 +178,19 @@ def tester_evidence_problems(sdir: Path) -> list[str]:
         )
         return problems
     results_text = results_path.read_text(errors="replace")
+    if sum(key.strip().lower() == "verdict" for key, _ in FIELD_LINE.findall(results_text)) != 1:
+        problems.append("results.md requires exactly one Verdict")
     verdict = _field(results_text, "Verdict")
     if verdict not in ("pass", "fail", "could-not-run"):
         problems.append(
             "results.md needs `**Verdict** pass|fail|could-not-run`"
         )
     result_heads = list(CASE_HEADING.finditer(results_text))
+    result_ids = [h.group(1).upper() for h in result_heads]
+    if len(set(result_ids)) != len(result_ids):
+        problems.append("results.md has duplicate case IDs")
+    for cid in sorted(set(result_ids) - set(case_ids)):
+        problems.append(f"results.md contains undeclared case {cid}")
     result_by_id: dict[str, str] = {}
     for i, heading in enumerate(result_heads):
         end = result_heads[i + 1].start() if i + 1 < len(result_heads) else len(results_text)
@@ -191,12 +201,16 @@ def tester_evidence_problems(sdir: Path) -> list[str]:
             problems.append(f"results.md has no outcome section for {cid}")
             continue
         outcome = _field(block, "Outcome")
+        if sum(key.strip().lower() == "outcome" for key, _ in FIELD_LINE.findall(block)) != 1:
+            problems.append(f"{cid} requires exactly one Outcome")
         if outcome not in ("pass", "fail", "could-not-run"):
             problems.append(
                 f"{cid} needs `**Outcome** pass|fail|could-not-run` in results.md"
             )
         if not _field(block, "Evidence"):
             problems.append(f"{cid} needs concrete `**Evidence**` in results.md")
+        if verdict == "pass" and outcome != "pass":
+            problems.append(f"overall pass contradicts {cid} outcome `{outcome}`")
     try:
         if cases_path.stat().st_mtime > results_path.stat().st_mtime:
             problems.append(
@@ -215,6 +229,9 @@ def beta_evidence_problems(sdir: Path) -> list[str]:
         return ["beta-review.md is missing; G5 cannot finish without review evidence"]
     text = path.read_text(errors="replace")
     problems = []
+    for field in ("surface", "verdict"):
+        if sum(key.strip().lower() == field for key, _ in FIELD_LINE.findall(text)) != 1:
+            problems.append(f"beta-review.md requires exactly one {field}")
     if _field(text, "Surface") not in ("ui", "no-ui"):
         problems.append("beta-review.md needs `**Surface** ui|no-ui`")
     if _field(text, "Verdict") not in ("pass", "fail"):
@@ -229,6 +246,8 @@ def beta_evidence_problems(sdir: Path) -> list[str]:
         findings_end = worked_h.start() if worked_h and worked_h.start() > findings_h.end() else len(text)
         findings_body = text[findings_h.end():findings_end]
         heads = list(BETA_FINDING.finditer(findings_body))
+        if len({h[1].upper() for h in heads}) != len(heads):
+            problems.append("beta review has duplicate finding IDs")
         if not heads and not re.search(r"^\s*-\s+None\.?\s*$", findings_body, re.M | re.I):
             problems.append(
                 "Findings must use `### B-NN — ...` with Severity/Place/Fix, or `- None.`"
@@ -236,6 +255,9 @@ def beta_evidence_problems(sdir: Path) -> list[str]:
         for i, heading in enumerate(heads):
             end = heads[i + 1].start() if i + 1 < len(heads) else len(findings_body)
             block = findings_body[heading.end():end]
+            for field in ("severity", "place", "fix"):
+                if sum(key.strip().lower() == field for key, _ in FIELD_LINE.findall(block)) != 1:
+                    problems.append(f"{heading[1]} requires exactly one {field}")
             severity = _field(block, "Severity")
             if severity not in ("0", "1", "2", "3", "4"):
                 problems.append(f"{heading.group(1).upper()} needs `**Severity** 0|1|2|3|4`")
@@ -247,6 +269,12 @@ def beta_evidence_problems(sdir: Path) -> list[str]:
         worked_body = text[worked_h.end():].strip()
         if not worked_body:
             problems.append("`## What worked` is empty")
+    if _field(text, "Verdict") == "pass":
+        for i, heading in enumerate(list(BETA_FINDING.finditer(text))):
+            tail = text[heading.end():]
+            block = re.split(r"^###\s+B-", tail, maxsplit=1, flags=re.M)[0]
+            if _field(block, "Severity") in ("3", "4") or _field(block, "Acceptance") == "yes":
+                problems.append(f"beta pass contradicts blocking finding {heading.group(1)}")
     return problems
 
 
@@ -352,6 +380,45 @@ def session_gate_problems(
     problems = task_gate_problems(short_agent, brief, cwd)
     if short_agent == "foreman-tester":
         problems.extend(tester_evidence_problems(sdir))
+        # Browser obligations are task-level, not inferred from a populated URL.
+        m = TASK_FILE_LINE.search(brief)
+        if m:
+            path = Path(m.group(1).strip().strip("`"))
+            path = path if path.is_absolute() else cwd / path
+            if path.is_file() and parse_task(path).get("validation") == "browser":
+                text = (sdir / "results.md").read_text() if (sdir / "results.md").is_file() else ""
+                if _field(text, "Verdict") == "pass":
+                    for field in ("Browser", "Viewport", "Browser evidence"):
+                        if not _field(text, field):
+                            problems.append(f"browser task requires **{field}** in results.md")
+                    evidence_refs = next((value for key, value in FIELD_LINE.findall(text) if key.lower() == "browser evidence"), "")
+                    for ref in evidence_refs.split(",") if evidence_refs else []:
+                        artifact = Path(ref.strip().strip("`"))
+                        artifact = artifact if artifact.is_absolute() else sdir / artifact
+                        if not artifact.is_file() or artifact.stat().st_size == 0:
+                            problems.append(f"browser evidence file is missing/empty: {ref}")
+    if status.get("task_ids"):
+        if short_agent == "foreman-developer":
+            from verify import evidence_problems
+            problems.extend(evidence_problems(sdir, status))
+        import fnmatch
+        m = TASK_FILE_LINE.search(brief)
+        if m:
+            path = Path(m[1].strip().strip("`"))
+            path = path if path.is_absolute() else cwd / path
+            if path.is_file():
+                task = parse_task(path)
+                try:
+                    task_rel = path.resolve().relative_to(cwd.resolve()).as_posix()
+                except ValueError:
+                    problems.append("task file is outside worker checkout")
+                    task_rel = ""
+                snap = repository_snapshot or worktree_snapshot(cwd, status.get("start_commit"), status.get("base_commit"))
+                for changed in snap.get("committed_paths", []):
+                    if changed == task_rel:
+                        continue
+                    if changed.startswith(".foreman/") or not any(fnmatch.fnmatch(changed, glob) for glob in task.get("files", [])):
+                        problems.append(f"worker changed a file outside its declared scope: {changed}")
     problems.extend(repository_state_problems(
         short_agent, status, repository_snapshot
     ))
@@ -392,6 +459,16 @@ def session_pass_problems(
                 f"tester verdict is `{verdict or 'missing'}`, not `pass`; route it "
                 "back to development instead of integrating"
             )
+        brief = (sdir / "brief.md").read_text()
+        m = TASK_FILE_LINE.search(brief)
+        if m:
+            path = Path(m[1].strip().strip("`"))
+            if not path.is_absolute():
+                path = Path(status.get("cwd") or ".") / path
+            if path.is_file():
+                task = parse_task(path)
+                if task["acceptance_done"] != task["acceptance_total"]:
+                    problems.append("tester pass contradicts unchecked acceptance criteria")
     elif short_agent == "foreman-beta-tester":
         verdict = _field((sdir / "beta-review.md").read_text(errors="replace"), "Verdict")
         if verdict != "pass":
@@ -420,7 +497,8 @@ def stop_hook() -> int:
     if not problems:
         status.pop("gate_deferred", None)
         status.pop("gate_problems", None)
-        save_json(sdir / "status.json", status)
+        from ops import update_session
+        update_session(sdir, gate_deferred=False, gate_problems=[])
         return 0
 
     blocks = int(status.get("gate_blocks", 0))
@@ -429,11 +507,13 @@ def stop_hook() -> int:
         # preserve the unresolved evidence for the supervisor's REVIEW state.
         status["gate_deferred"] = True
         status["gate_problems"] = problems
-        save_json(sdir / "status.json", status)
+        from ops import update_session
+        update_session(sdir, gate_deferred=True, gate_problems=problems)
         return 0
 
     status["gate_blocks"] = blocks + 1
-    save_json(sdir / "status.json", status)
+    from ops import update_session
+    update_session(sdir, gate_blocks=blocks + 1)
     print("[foreman gate] Not done yet:\n- " + "\n- ".join(problems), file=sys.stderr)
     return 2
 

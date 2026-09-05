@@ -933,6 +933,43 @@ def render(root: Path, static: bool = False) -> str:
              f'<div class="lbl">{progress_done}/{progress_total} {progress_label}</div>'
              '</div></div></div>')
 
+    from delivery import summary
+    from ops import WorkflowError
+    try:
+        delivery = summary(root)
+        if delivery["mode"] == "sprint":
+            p.append(f'<h2>{esc(delivery["milestone"])} · {esc(delivery["id"])}</h2>'
+                     f'<p>{esc(delivery["goal"])}</p><p>'
+                     f'{delivery["done"]}/{delivery["current"]} after G5 · '
+                     f'{delivery["committed"]} originally committed · '
+                     f'+{delivery["added"]}/−{delivery["removed"]} scope changes · '
+                     f'{delivery["in_test"]} awaiting G4 · {delivery["beta"]} awaiting G5</p>')
+            p.append(f'<p>Demo: <code>{esc(delivery["demo"])}</code></p>')
+            if delivery.get("preview"):
+                p.append(f'<p>Early frontend preview: {esc(delivery["preview"])}</p>')
+        else:
+            p.append(f'<p>{esc(delivery["message"])}</p>')
+    except (WorkflowError, KeyError, TypeError) as exc:
+        p.append(f'<p role="alert">Invalid delivery plan: {esc(str(exc))}</p>')
+    problems = [f'{t["id"]}: {problem}' for t in tasks for problem in t.get("problems", [])]
+    if problems:
+        p.append('<p role="alert">Task integrity errors; counts are provisional: '
+                 + esc('; '.join(problems)) + '</p>')
+    if not static:
+        from foreman_lib import load_json
+        from events import pending
+        resource = load_json(root / "work" / "resources.json")
+        if resource:
+            p.append(f'<p>Worker admission: {"paused" if resource.get("paused") else "open"} · '
+                     f'{esc(resource.get("reason", "unknown"))}</p>')
+        waiting = pending(root)
+        p.append(f'<p>{len(waiting)} events awaiting manager disposition. '
+                 'Full history: <code>work/events/</code></p>')
+        queue = load_json(root / "work" / "queue.json", {"jobs": []})
+        held = [j for j in queue.get("jobs", []) if j.get("state") in ("pending", "failed", "interrupted")]
+        for job in held[:10]:
+            p.append(f'<p>{esc(job.get("name"))}: {esc(job.get("state"))} · {esc(job.get("error", "queued"))}</p>')
+
     # stat rail
     tiles = [
         ("live" if d["ac_total"] and d["ac_done"] == d["ac_total"] else "", "Criteria met",
@@ -1112,14 +1149,18 @@ def render(root: Path, static: bool = False) -> str:
         p.append('<p id="feed-note" class="feed-note">Chat transcript from stream.jsonl · '
                  'refreshes when the dashboard regenerates (or runs with <code>--watch</code>)</p>')
         p.append('<div class="feed-body">')
-        p.append('<div id="feed-empty" class="empty">no captured stream for this task</div>')
+        p.append('<div id="feed-empty" class="empty">Transcript not embedded in this bounded preview. '
+                 'The full captured stream remains in work/sessions/&lt;session-name&gt;/stream.jsonl.</div>')
         sdir = sessions_dir(root)
         task_by_session = {t.get("session"): t for t in tasks if t.get("session")}
-        for s in sessions:
+        # Keep the console proportional to live work. Old complete transcripts
+        # remain in their session directories instead of inflating every refresh.
+        ordered = sorted(sessions, key=lambda s: (s.get("state", "").split(":")[0] in ("starting", "running", "quiet", "stuck", "overdue"), s.get("started_at", 0)), reverse=True)
+        for s in ordered[:12]:
             name = s.get("name")
             if not name:
                 continue
-            events = parse_stream_activity(sdir / name / "stream.jsonl")
+            events = parse_stream_activity(sdir / name / "stream.jsonl", max_events=60, max_detail=1200)
             state = str(s.get("state") or "unknown")
             task = task_by_session.get(name)
             display_title = (
@@ -1144,12 +1185,15 @@ def write_html(root: Path, out: Path, static: bool, refresh: int | None = None) 
     refresh_tag = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
                    if refresh and not static else "")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
+    content = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"{refresh_tag}"
         f"<title>Foreman — {html.escape(root.parent.name)}</title></head><body>"
         f"{render(root, static=static)}</body></html>\n")
+    from foreman_lib import atomic_write
+    if not static or not out.is_file() or out.read_text() != content:
+        atomic_write(out, content)
 
 
 if __name__ == "__main__":

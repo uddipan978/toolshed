@@ -70,8 +70,12 @@ def write_handover(payload: dict) -> int:
         return 0  # not a Foreman worker; compaction proceeds untouched
 
     n = len(list(sdir.glob("handover-*.md"))) + 1
-    cwd = payload.get("cwd") or str(sdir)
     status = load_json(sdir / "status.json")
+    cwd = status.get("cwd") or payload.get("cwd") or str(sdir)
+    from checkpoint import preserve
+    recovery = preserve(sdir, status) if status.get("branch") else {}
+    from foreman_lib import worktree_snapshot
+    snapshot = worktree_snapshot(Path(cwd), status.get("start_commit"), status.get("base_commit"))
     stream = read_stream(sdir / "stream.jsonl")
 
     _, branch, _ = run(["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], timeout=10)
@@ -112,6 +116,11 @@ Full brief: `{sdir / 'brief.md'}`
 
 ## Git state
 Branch `{branch.strip() or 'unknown'}` in `{cwd}`
+
+Worker commits after session start: {snapshot.get('commits_ahead', 'unknown')}.
+Uncommitted files are not on this branch. Recovery copy: {recovery.get('location', 'none')}.
+Snapshot complete: {recovery.get('preserved', False)}. Check the current worktree and
+`git rev-list --count <start_commit>..HEAD` before claiming predecessor work exists.
 
 ```
 {diffstat.strip() or '(no tracked changes yet)'}

@@ -23,6 +23,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$NAME" ]] || { echo "integrate.sh: --name is required" >&2; exit 2; }
+if [[ "${FOREMAN_INTEGRATION_LOCK:-}" != "1" ]]; then
+  LOCK_ARGS=(run --root "$ROOT" --name "$NAME")
+  [[ -n "$BASE" ]] && LOCK_ARGS+=(--base "$BASE")
+  [[ "$KEEP" == "yes" ]] && LOCK_ARGS+=(--keep-worktree)
+  exec python3 "$SCRIPT_DIR/integration_record.py" "${LOCK_ARGS[@]}"
+fi
 
 ROOT="$(cd "$(dirname "$ROOT")" && pwd)/$(basename "$ROOT")"
 PROJECT="$(dirname "$ROOT")"
@@ -38,11 +44,26 @@ except Exception:
 status_field() {
   json_field "$STATUS" "$1"
 }
+session_is_alive() {
+  python3 - "$SCRIPT_DIR" "$1" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from foreman_lib import load_json
+from ops import session_alive
+sys.exit(0 if session_alive(load_json(Path(sys.argv[2]))) else 1)
+PY
+}
 BRANCH="$(status_field branch)"
 CWD="$(status_field cwd)"
 PID="$(status_field pid)"
 STATE="$(status_field state)"
 AGENT="$(status_field agent)"
+TASK_IDS="$(status_field task_ids)"
+if [[ -n "$TASK_IDS" && "$TASK_IDS" != "[]" && "${AGENT##*:}" != "foreman-tester" ]]; then
+  echo "integrate.sh: managed work must pass independent G4; integrate the tester session" >&2
+  exit 1
+fi
 RECORDED_BASE="$(status_field base_commit)"
 START_COMMIT="$(status_field start_commit)"
 LINEAGE_START="$(status_field lineage_start_commit)"
@@ -88,7 +109,7 @@ fi
 if [[ -z "$START_COMMIT" ]] && [[ "${AGENT##*:}" =~ ^foreman-(developer|tester)$ ]]; then
   CHECK_TERMINAL="yes"
 fi
-if [[ "$PID" =~ ^[0-9]+$ ]] && [[ "$PID" -gt 0 ]] && kill -0 "$PID" 2>/dev/null; then
+if session_is_alive "$STATUS"; then
   echo "integrate.sh: $NAME is still running (pid $PID)" >&2
   echo "  wait for the supervisor's DONE/READY/REVIEW event before integration" >&2
   exit 1
@@ -139,6 +160,16 @@ if [[ -n "$LINEAGE_START" ]] && ! git merge-base --is-ancestor "$LINEAGE_START" 
   exit 1
 fi
 
+# Retain the exact tested object independently of rebases and branch cleanup.
+git update-ref "refs/foreman/tested/$NAME" "$(git rev-parse "$BRANCH")"
+
+# Check the user's product edits BEFORE the bookkeeping commit. A pre-staged
+# product change would otherwise be included in that commit unexpectedly.
+if [[ -n "$(git status --porcelain | grep -vE ' (\.foreman/|\.gitignore)' || true)" ]]; then
+  echo "integrate.sh: uncommitted changes outside .foreman; preserve them before integration" >&2
+  exit 1
+fi
+
 PRED_INCLUDED="no"
 if [[ -n "$BASE_SESSION" ]]; then
   BASE_STATUS="$ROOT/work/sessions/$BASE_SESSION/status.json"
@@ -184,7 +215,9 @@ INTEGRATE_LOG="/tmp/foreman-integrate-$$.log"
 # like unrelated changes from a common ancestor. Replay only commits after the
 # recorded lineage start onto the current base, then fast-forward.
 if [[ -n "$LINEAGE_START" && -d "$WT" ]]; then
-  if git -C "$WT" rebase --onto "$BASE" "$LINEAGE_START" "$BRANCH" >"$INTEGRATE_LOG" 2>&1; then
+  if git -C "$WT" rebase --onto "$BASE" "$LINEAGE_START" "$BRANCH" >"$INTEGRATE_LOG" 2>&1 \
+      || python3 "$SCRIPT_DIR/merge_task.py" --worktree "$WT" >>"$INTEGRATE_LOG" 2>&1; then
+    python3 "$SCRIPT_DIR/integration_record.py" verify --name "$NAME" --root "$ROOT"
     git merge --ff-only "$BRANCH" >>"$INTEGRATE_LOG" 2>&1
     echo "integrated tested lineage $NAME into $BASE"
     rm -f "$INTEGRATE_LOG"
@@ -216,6 +249,9 @@ else
   exit 1
 fi
 
+# Archive results and reconcile task/views before removing any worker checkout.
+python3 "$SCRIPT_DIR/integration_record.py" finish --name "$NAME" --root "$ROOT"
+
 if [[ "$KEEP" == "no" ]]; then
   if [[ -d "$WT" ]] && ! git worktree remove "$WT"; then
     echo "integrate.sh: merge succeeded, but clean worktree removal failed: $WT" >&2
@@ -233,8 +269,7 @@ if [[ "$KEEP" == "no" ]]; then
     PRED_WT="$(json_field "$BASE_STATUS" cwd)"
     PRED_BRANCH="$(json_field "$BASE_STATUS" branch)"
     PRED_PID="$(json_field "$BASE_STATUS" pid)"
-    if [[ "$PRED_PID" =~ ^[0-9]+$ ]] && [[ "$PRED_PID" -gt 0 ]] \
-        && kill -0 "$PRED_PID" 2>/dev/null; then
+    if session_is_alive "$BASE_STATUS"; then
       echo "left predecessor $BASE_SESSION in place: its pid is still live"
     elif [[ -n "$PRED_WT" && -d "$PRED_WT" ]] \
         && [[ -n "$(git -C "$PRED_WT" status --porcelain)" ]]; then

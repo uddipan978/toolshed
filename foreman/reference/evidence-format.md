@@ -40,6 +40,25 @@ Create it as soon as execution starts and grow it one case at a time.
 `Verdict` and every `Outcome` are exactly `pass`, `fail`, or `could-not-run`.
 Every case from `testcases.md` needs an outcome. `fail` and `could-not-run` are
 complete reports, not Stop-gate failures; the manager decides whether G4 passed.
+IDs must be unique, and results cannot invent undeclared cases. An overall `pass`
+requires every outcome to pass and all acceptance criteria to remain satisfied.
+
+For a task with `**Validation** browser`, a passing report also requires:
+
+```markdown
+**Browser** Chromium, version recorded from the browser
+**Viewport** 1440x900 and 390x844
+**Browser evidence** screenshots/focus.png, screenshots/mobile.png
+```
+
+Drive the real browser for focus, layout, contrast, animation and interaction claims.
+Browser evidence is a comma-separated list of existing, nonempty artifact paths,
+absolute or relative to the session directory. Put measurements and tab sequences
+in the body; absent artifacts cannot support a pass.
+Wait for relevant transitions to settle before measuring; record timing conditions.
+Use a positive control for behavior probes. Test the criterion's full promised
+surface, including native interactive elements and embedded frames where applicable.
+Do not narrow an unqualified acceptance criterion to today's markup.
 
 ## G5 — `beta-review.md`
 
@@ -63,4 +82,11 @@ complete reports, not Stop-gate failures; the manager decides whether G4 passed.
 
 `Surface` is `ui` or `no-ui`; `Verdict` is `pass` or `fail`. If there are no
 findings, write `- None.` under `## Findings`. Severity 3–4 still becomes a new
-task; severity 0–2 is carried to G6.
+fix candidate; severity 0–2 is recorded through `findings.py` and carried to G6.
+`**Acceptance** yes` marks a finding that falsifies acceptance regardless of severity.
+A `pass` with severity 3–4 or a failed acceptance finding is contradictory and rejected.
+Deferred issues are known, not automatically accepted by the user.
+
+Managed integration/G5 disposition copies the compact report into tracked
+`.foreman/evidence/<session>/` with a task-bound receipt and content hashes before
+cleaning up worktrees. Raw transcripts and large browser scratch remain local.

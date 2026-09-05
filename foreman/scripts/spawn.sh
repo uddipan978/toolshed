@@ -27,4 +27,4 @@ fi
 HARNESS="$(foreman_detect "$ROOT_ABS")"
 ADAPTER="$HERE/adapters/$HARNESS/spawn.sh"
 [[ -x "$ADAPTER" ]] || { echo "spawn.sh: no adapter for harness '$HARNESS' ($ADAPTER)" >&2; exit 2; }
-exec "$ADAPTER" "$@"
+exec python3 "$HERE/dispatch.py" "$@"

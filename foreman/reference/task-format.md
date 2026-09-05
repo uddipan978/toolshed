@@ -21,6 +21,10 @@
 | `[?]` | Awaiting Human | needs a decision only the user can make | manager |
 
 Every lane on the board has a token. A lane with no token can never be reached.
+Manager writes go through `state.py`, with evidence required for earned states.
+Spawn records `[~]` and Session automatically, integration records `[b]`, and G5
+disposition records `[x]`. All four views refresh as part of these operations.
+Duplicate headers, duplicate task IDs and duplicate status fields block mutations.
 
 **Developers never write `[x]`.** Developer Verify is G3. The Stop hook rejects
 a developer stop whose task is `[x]` and demands `[t]`. Testers do not set
@@ -82,6 +86,11 @@ every `**Key** value` pair on a line, so field order does not matter.
 | `Session` | the worker session name, set by the manager on spawn |
 | `Est` | LLM units — see below |
 | `Traces to` | the requirement section this exists to satisfy. Mandatory. If you cannot fill it in, raise it before building it. |
+| `Files` | comma-separated repository paths/globs; runtime checks parallel write scope |
+| `Surface` | `ui` or `no-ui`; independent of whether an app URL is populated |
+| `Validation` | `browser` for UI work; `command` for non-UI work |
+| `Track` | `frontend`, `backend`, `integration` or `general` |
+| `Milestone`, `Sprint` | delivery labels; JSON commitment owns membership; `Milestone later` explicitly defers work |
 
 **Acceptance criteria are EARS form**: `WHEN <condition> THE SYSTEM SHALL <behaviour>`.
 That shape converts directly into a test name and cannot be satisfied by a vibe.

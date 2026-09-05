@@ -22,6 +22,7 @@ you as a `foreman-critic` worker with `--worktree no` instead. Same job.
 
 - `.foreman/REQUIREMENTS.md`
 - `.foreman/constitution.md`
+- `.foreman/delivery.json`, `.foreman/design.md` and `.foreman/contracts.md` when relevant
 - every `.foreman/modules/*/MODULE.md`
 - every `.foreman/modules/*/tasks/*.md`
 - `${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/reference/critique-format.md` — the output schema
@@ -62,6 +63,14 @@ broken? Criteria that cannot fail are decoration.
 **Missing work.** Migrations, auth, error paths, empty states, rollback,
 concurrency, the second user, the malformed input. Plans written from the happy
 path omit the same things every time.
+
+**Delivery and visible progress.** Is the MVP smaller than the complete product?
+Can the user open a real static frontend preview during the first sprint while
+backend work proceeds independently? Do fixtures and backend share a contract, and
+does a wiring task depend on both? Are design feedback and browser checks early?
+Does the sprint budget include independent testing and review? Can optional findings
+be deferred without weakening acceptance? A targeted change needs a thin version,
+not an invented product roadmap.
 
 **Over-engineering.** Speculative abstraction for a requirement nobody stated?
 Something the codebase already does? Grep before asserting — a confident wrong
